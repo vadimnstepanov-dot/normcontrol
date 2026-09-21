@@ -158,7 +158,7 @@ def scope_proof(finding, payload, documents, card):
 
 def validate_positive(row, rule, payload):
     """A positive/NA decision needs literal evidence for EVERY source obligation."""
-    row = dict(row)
+    row = copy.deepcopy(row)
     if row.get('state') not in ('checked','not_applicable'):return row
     from .checks import validate_evidence
     # Validate against the ACTUAL payload, never a larger local document.
@@ -174,6 +174,12 @@ def validate_positive(row, rule, payload):
     if set(ids)!=expected or len(ids)!=len(set(ids)):reason='Нет отдельного доказательства для каждой обязанности'
     try:
         for check in checks:
+            # Some models use checked as "evaluated" while explicitly returning
+            # not_applicable as the outcome. Normalize this redundant status only;
+            # all literal evidence and applicability safeguards below still apply.
+            if check.get('state')=='checked' and check.get('outcome')=='not_applicable':
+                check['state']='not_applicable'
+                check['status_normalization']='checked_with_explicit_not_applicable_outcome'
             validate_evidence(check.get('evidence',[]),docs)
             if not isinstance(check.get('reason'),str) or not check['reason'].strip():raise ValueError('Пустое обоснование')
             if check.get('state') not in ('checked','not_applicable'):raise ValueError('Не все обязанности проверены')

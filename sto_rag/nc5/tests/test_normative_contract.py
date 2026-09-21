@@ -98,6 +98,14 @@ class NormativeContractTests(unittest.TestCase):
         row={'state':'checked','checks':[{'obligation_id':obligations(r)[0]['id'],'state':'checked','outcome':'satisfied','reason':'Описано','evidence':[{'document':'d','locator':'p2','quote':d['blocks'][1]['text']}]}]}
         self.assertEqual(validate_positive(row,r,{'blocks':d['blocks']})['state'],'insufficient')
 
+    def test_explicit_inapplicability_accepts_redundant_checked_status(self):
+        r=rule();d=document('Обмен сообщениями в проекте не предусмотрен.')
+        row={'state':'not_applicable','checks':[{'obligation_id':obligations(r)[0]['id'],'state':'checked','outcome':'not_applicable','reason':'Объект исключён явным условием проекта.','evidence':[{'document':'d','locator':'p2','quote':d['blocks'][1]['text']}]}]}
+        self.assertEqual(validate_positive(row,r,{'blocks':d['blocks']})['state'],'not_applicable')
+        self.assertEqual(row['checks'][0]['state'],'checked')
+        row['checks'][0]['evidence'][0]['quote']='Выдуманное исключение.'
+        self.assertEqual(validate_positive(row,r,{'blocks':d['blocks']})['state'],'insufficient')
+
     def test_checked_violation_is_distinct_from_compliance(self):
         r=rule();d=document('Применяются типовые механизмы платформы.')
         row={'state':'checked','checks':[{'obligation_id':obligations(r)[0]['id'],'state':'checked','outcome':'violated','reason':'Требуемые принципы не раскрыты','evidence':[{'document':'d','locator':'p2','quote':d['blocks'][1]['text']}]}]}
