@@ -37,8 +37,9 @@ def enrich_catalog(cat, blocks_by_source):
         blocks = blocks_by_source.get(card['source_id'], [])
         card['obligations'] = obligations(card)
         refs = []; unresolved = []; document_refs=[]; visited = set()
-        def walk(text, depth=0, source_id=None):
+        def walk(text, depth=0, source_id=None, appendix=None):
             source_id=source_id or card['source_id']
+            appendix=card.get('appendix','') if appendix is None else appendix
             for match in REFERENCE.finditer(text):
                 key = ('table' if match['kind'].lower().startswith('табл') else 'clause', match['number'].upper())
                 if key[0]=='clause' and re.search(r'наименование.{0,90}ссылк.{0,45}пункт.{0,60}описани',text,re.I):
@@ -48,14 +49,19 @@ def enrich_catalog(cat, blocks_by_source):
                 sentence = re.split(r'[;\n]', text[max(0, match.start()-100):match.end()+140])
                 nearby = ' '.join(sentence)
                 external = bool(re.search(r'(?:ГОСТ|СТО)\s+[\w.]+', nearby)) and 'настоящ' not in nearby.lower()
+                # A table explicitly defined in this text is local even when the
+                # surrounding sentence cites another standard as its legal basis.
+                if key[0]=='table' and re.search(r'(?im)^\s*Таблица\s+'+re.escape(key[1])+r'\s*[–—-]',text):external=False
                 target_source=source_id
+                target_appendix=appendix
                 if external:
                     codes=set(re.findall(r'04\.001\.\d+',nearby))
                     targets=[s for s in sources.values() if any(code in s.get('standard','') for code in codes)]
                     if len(codes)!=1 or len(targets)!=1:
                         unresolved.append({'reference': match[0], 'reason': 'external_source_resolution_required'}); continue
                     target_source=targets[0]['source_id']
-                visit=(target_source,*key)
+                    target_appendix=''
+                visit=(target_source,target_appendix,*key)
                 if visit in visited:continue
                 visited.add(visit)
                 if depth >= 3:
@@ -68,7 +74,7 @@ def enrich_catalog(cat, blocks_by_source):
                     else:
                         local_clause=clause.rsplit(', ',1)[-1]
                         hit = local_clause == key[1] or local_clause.startswith(key[1]+'.')
-                        if card.get('appendix') and target_source==card['source_id']: hit = hit and block.get('appendix', '') == card['appendix']
+                    hit = hit and block.get('appendix', '') == target_appendix
                     if hit: found.append(block)
                 if not found:
                     unresolved.append({'reference': match[0], 'reason': 'target_not_resolved'}); continue
@@ -77,7 +83,7 @@ def enrich_catalog(cat, blocks_by_source):
                     ref = {'source_id': target_source, 'source_sha256': sources.get(target_source,{}).get('sha256',card['source_sha256']),
                            'locator': block['locator'], 'quote': quote, 'relation': key[0], 'reference': match[0]}
                     if not any(x['source_id']==target_source and x['locator'] == ref['locator'] and x['quote'] == quote for x in refs):
-                        refs.append(ref); walk(quote, depth+1,target_source)
+                        refs.append(ref); walk(quote, depth+1,target_source,block.get('appendix',''))
         walk(card['source_quote'])
         for parent in card.get('parent_context_refs', []):
             if CONDITION.search(parent['quote']):

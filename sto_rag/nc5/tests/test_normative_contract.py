@@ -55,6 +55,14 @@ class NormativeContractTests(unittest.TestCase):
         self.assertEqual(len(result['applicability_contract']['conditions']),2)
         self.assertEqual(result['source_quote'],r['source_quote'])
 
+    def test_same_numbered_tables_do_not_cross_appendices(self):
+        r=rule();r['source_quote']='Сведения по таблице 1.\nТаблица 1 – Состав в соответствии с СТО РЖД 04.001.2'
+        blocks=[{'locator':'Таблица 1, строка 1','text':'Верная таблица','appendix':'Приложение А'},
+                {'locator':'Таблица 1, строка 1','text':'Другой шаблон','appendix':'Приложение Б'}]
+        result=enrich_catalog({'cards':[r]}, {'s':blocks})['cards'][0]
+        self.assertEqual([x['quote'] for x in result['normative_dependencies']],['Верная таблица'])
+        self.assertFalse(result['unresolved_dependencies'])
+
     def test_composite_list_all_members_need_evidence(self):
         r=rule();r['source_quote']='Указываются:\n- формат;\n- протокол.';r['obligations']=obligations(r)
         self.assertEqual(len(r['obligations']),2)
