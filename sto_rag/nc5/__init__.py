@@ -1,2 +1,2 @@
-"""Durable, evidence based document review. No conversation or Context Guard state."""
+"""Durable, evidence-based document review with bounded batch contexts."""
 VERSION = '5.0.0'

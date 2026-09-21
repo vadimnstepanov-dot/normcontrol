@@ -42,7 +42,7 @@ def classify(blocks,cat):
     return {'profile_id':p['id'],'type':p['code'],'confidence':.95,'basis':[{'locator':b['locator'],'quote':b['text']}], 'name':p['name']}
 
 def parse(path,cat):
-    from quality_review import units_for_document
+    from document_units import units_for_document
     from word_compact import N,Q,plain
     path=inspect_file(path);d,legacy,oldprofile,units=units_for_document(str(path))
     blocks=[copy.deepcopy(b) for u in units for b in u['blocks']]

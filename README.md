@@ -39,10 +39,16 @@ Word-документы ──> локальный worker ──> llama.cpp / л
 git clone https://github.com/vadimnstepanov-dot/normcontrol.git
 cd normcontrol
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
-Copy-Item .\config\config.example.json .\sto_rag\data\nc5\config.json
 $env:PYTHONPATH = "$PWD\sto_rag"
 .\.venv\Scripts\python.exe .\sto_rag\normcontrol_v5.py probe
 .\.venv\Scripts\python.exe .\sto_rag\normcontrol_v5.py serve
+```
+
+Если Python установлен без `py.exe`, передайте путь явно:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 `
+  -PythonExecutable "C:\Python312\python.exe"
 ```
 
 Откройте `http://127.0.0.1:8096`. Конкретный адрес и одноразовый токен также выводятся в консоль при запуске.
@@ -57,7 +63,11 @@ $env:PYTHONPATH = "$PWD\sto_rag"
 .\.venv\Scripts\python.exe .\sto_rag\normcontrol_v5.py catalog-audit
 ```
 
-Подробная настройка модели, нормативной базы, портала и worker приведена в [INSTALL.md](INSTALL.md).
+Выберите инструкцию установки:
+
+- [Windows](INSTALL-WINDOWS.md) — локальная LLM, Word и worker;
+- [Linux](INSTALL-LINUX.md) — портал на VPS или полный режим для `.docx`;
+- [краткое сравнение вариантов](INSTALL.md).
 
 ## Командная строка
 
