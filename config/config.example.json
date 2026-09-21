@@ -1,0 +1,23 @@
+{
+  "endpoint": "http://127.0.0.1:8082",
+  "model": "local-qwen",
+  "context": 20480,
+  "output": 4096,
+  "margin": 1536,
+  "timeout": 300,
+  "retries": 1,
+  "ram_bytes": 8589934592,
+  "port": 8096,
+  "formatting": "xml",
+  "check_language": true,
+  "check_logic": true,
+  "check_sto": true,
+  "language_chunk_chars": 14000,
+  "logic_chunk_chars": 12000,
+  "reference_group_size": 3,
+  "verification_group_size": 3,
+  "sto_group_size": 10,
+  "sto_group_chars": 52000,
+  "max_file_bytes": 52428800,
+  "max_unpacked_bytes": 209715200
+}

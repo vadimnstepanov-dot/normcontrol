@@ -1,0 +1,38 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.coverage
+
+# Local models, licensed source documents and generated indexes
+*.gguf
+*.doc
+*.docx
+sto_rag/data/
+
+# Runtime state and user uploads
+normcontrol-web/data/
+normcontrol-web/static-collected/
+*.sqlite3
+*.lock
+
+# Private configuration
+.env
+*.env
+!*.env.example
+config.json
+worker.env
+
+# Reports and temporary files
+reports/
+deliverables/
+tmp/
+*.tmp
+~$*
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

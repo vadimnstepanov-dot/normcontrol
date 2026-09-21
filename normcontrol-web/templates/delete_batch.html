@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block content %}
+<a class="back-link" href="{% url 'batch' batch.pk %}">← Вернуться к пакету</a>
+<section class="panel form-panel"><span class="eyebrow">АДМИНИСТРИРОВАНИЕ</span><h1>Удалить пакет?</h1>
+<h2>{{ batch.name }}</h2><p>{{ batch.documents.count }} документов · {{ batch.get_status_display }}</p>
+<p>Будут удалены этот пакет, его отчёт и обратная связь. Это действие нельзя отменить в кабинете. Повторные проверки и используемые ими файлы сохранятся.</p>
+<p class="muted">Удаление из кабинета не удаляет исходные документы с вашего компьютера и локальные журналы обработчика.</p>
+<form method="post" action="{% url 'batch-action' batch.pk %}">{% csrf_token %}<input type="hidden" name="action" value="delete"><input type="hidden" name="confirm_delete" value="{{ batch.pk }}"><button class="button primary" type="submit">Удалить пакет и отчёт</button> <a class="button secondary" href="{% url 'batch' batch.pk %}">Отмена</a></form></section>
+{% endblock %}
