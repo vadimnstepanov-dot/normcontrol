@@ -147,7 +147,11 @@ class Engine:
         data['planning_finished']=time.time();self.store.update(jid,'running',data)
     @staticmethod
     def compact_rule(c):
-        return {k:c[k] for k in ('requirement_id','document_name','clause','appendix','normative_kind','applicability','source_quote','parent_context_refs','validation_status')}
+        from .normative_contract import obligations
+        result={k:c[k] for k in ('requirement_id','document_name','clause','appendix','normative_kind','applicability','source_quote','parent_context_refs','validation_status')}
+        result.update({k:c[k] for k in ('obligations','normative_dependencies','unresolved_dependencies','document_reference_templates','applicability_contract','document_scope','expected_evidence') if k in c})
+        result.setdefault('obligations',obligations(c))
+        return result
     def lessons(self,doc,owner):
         with self.store.connect() as c: rows=c.execute('SELECT data FROM lessons WHERE active=1 ORDER BY created DESC LIMIT 100').fetchall()
         lessons=[json.loads(r[0]) for r in rows]
@@ -305,7 +309,7 @@ class Engine:
             # Recovery replays this same response instead of generating a second variant.
             self.store.cache(task['cache_key'],result)
         if cached:result={**result,'reused_metrics':result.get('metrics',{}),'metrics':{'usage':{},'seconds':0,'estimated_tokens':self.client.count(task['payload'])}}
-        raw=result['raw'];valid=[];invalid=[]
+        raw=copy.deepcopy(result['raw']);valid=[];invalid=[]
         allowed={(b['document'],b['locator']) for b in task['payload'].get('blocks',[])}
         from .planning import coalesce_row_findings,coverage_questions
         for item in coalesce_row_findings(raw['findings'],task['payload'])+coverage_questions(raw,task['payload']):
@@ -318,6 +322,10 @@ class Engine:
                 item=route_finding(item,task['stage'])
                 if any((e['document'],e['locator']) not in allowed for e in item['evidence']):raise ValueError('Цитата вне пакета')
                 f=validate_finding(item,docs,cards)
+                if f.get('needs_full_scope') and f.get('requirement_id') in cards:
+                    from .normative_contract import scope_proof
+                    f['scope_proof']=scope_proof(f,task['payload'],docs,cards[f['requirement_id']])
+                    if f['scope_proof']['valid']:f['needs_full_scope']=False
                 if task['stage']=='inter' and f.get('kind')=='violation' and len({e['document'] for e in f['evidence']})<2:
                     f['kind']='question';f['explanation']+=' Противоречие между документами не подтверждено цитатами из двух файлов.'
                 from .quality_gate import assess
@@ -356,7 +364,12 @@ class Engine:
                     from .quality_gate import assess_rejection
                     forced,reason=assess_rejection(f,d['reason'])
                     if forced:status=forced;d['reason']=reason
-                if status=='confirmed' and f.get('needs_full_scope'):status='question';d['reason']+=' Автоматический поиск не доказывает отсутствие во всём документе.'
+                # Recompute on the verification payload, which may have been split
+                # or reduced after the discovery proof was recorded.
+                from .normative_contract import scope_proof
+                if status=='confirmed' and (f.get('needs_full_scope') or f.get('scope_proof')):
+                    proof=scope_proof(f,task['payload'],docs,cards.get(f.get('requirement_id'),{}))
+                    if not proof['valid']:status='question';d['reason']+=' Недостаточная область доказательства: '+proof['reason']+'.'
                 self.store.verdict(d['id'],status,d['reason'],verified_explanation=True,suggestion=suggestion)
             for fid in candidates.keys()-decided:self.store.verdict(fid,'question','Модель не вернула решение по этому элементу; пакет не принят как полный')
         required=set() if task['payload'].get('validation_retry') else {r['requirement_id'] for r in task['payload'].get('requirements',[])}
@@ -364,7 +377,13 @@ class Engine:
         for c in raw['coverage']:
             if not isinstance(c,dict) or not isinstance(c.get('requirement_id'),str) or c.get('state') not in ('checked','not_applicable','unknown','insufficient') or not isinstance(c.get('reason'),str):
                 invalid.append({'kind':'coverage','error':'Неверная структура отдельного решения по требованию'});continue
-            if c['requirement_id'] in required:coverage.append(c)
+            if c['requirement_id'] in required:
+                from .normative_contract import validate_positive
+                rule=next(r for r in task['payload']['requirements'] if r['requirement_id']==c['requirement_id'])
+                c=validate_positive(c,rule,task['payload'])
+                document_ids={b['document'] for b in task['payload'].get('blocks',[])}
+                if len(document_ids)==1:c['document']=next(iter(document_ids))
+                coverage.append(c)
         duplicated={rid for rid,n in Counter(c['requirement_id'] for c in coverage).items() if n>1}
         coverage=[c for c in coverage if c['requirement_id'] not in duplicated]
         for rid in duplicated:invalid.append({'kind':'coverage','error':'Повторяющийся идентификатор требования: '+rid})

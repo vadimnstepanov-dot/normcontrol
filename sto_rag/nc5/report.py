@@ -10,7 +10,16 @@ def build(engine,jid):
     job=engine.store.job(jid);tasks=engine.store.tasks(jid);findings=engine.store.findings(jid);coverage=list(job['data'].get('coverage_skipped',[]))+list(job['data'].get('deterministic_coverage',[]));limitations=list(job['data']['limitations'])
     for t in tasks:
         r=t['result'] or {}
-        coverage.extend({'task':t['id'],'stage':t['stage'],**x} for x in r.get('coverage',[]))
+        from .normative_contract import validate_positive
+        rules={x['requirement_id']:x for x in t['payload'].get('requirements',[])}
+        checked_rows=[validate_positive(x,rules[x['requirement_id']],t['payload']) if x['requirement_id'] in rules else x for x in r.get('coverage',[])]
+        document_ids=sorted({b['document'] for b in t['payload'].get('blocks',[])})
+        document_key='|'.join(document_ids)
+        coverage.extend({'task':t['id'],'stage':t['stage'],'document':document_key,**x} for x in checked_rows)
+        returned={x['requirement_id'] for x in r.get('coverage',[])}
+        if t['state'] not in ('split',) and t['stage']!='verify' and not t['payload'].get('validation_retry'):
+            for rule in t['payload'].get('requirements',[]):
+                if rule['requirement_id'] not in returned:coverage.append({'task':t['id'],'stage':t['stage'],'document':document_key,'requirement_id':rule['requirement_id'],'state':'pending' if t['state'] in ('pending','running') else 'unknown','reason':'Решение по требованию ещё не получено'})
         if t['state']=='failed':limitations.append({'task':t['id'],'stage':t['stage'],'reason':t['error'],'remedy':'Исправить причину и повторить только эту задачу'})
         for x in r.get('invalid',[]):limitations.append({'task':t['id'],**x,'remedy':'Повторная проверка элемента с исходной цитатой'})
         for x in (r.get('raw') or {}).get('limitations',[]):limitations.append({'task':t['id'],'reason':x})
@@ -30,6 +39,8 @@ def build(engine,jid):
     metrics['retries']=sum(max(0,n-1) for n in counts.values()) if measured else None
     metrics['retry_measurement']='event_log' if measured else 'not_recorded_by_legacy_runner'
     metrics['by_stage']={}
+    from .normative_contract import coverage_summary
+    metrics['normative_coverage']=coverage_summary(coverage,findings)
     for stage in dict.fromkeys(t['stage'] for t in tasks):
         subset=[t for t in tasks if t['stage']==stage]
         ms=[(t['result'] or {}).get('metrics',{}) for t in subset]
@@ -43,6 +54,10 @@ def build(engine,jid):
 def markdown(report):
     r=report;lines=['# '+r['status'],'',f'Конвейер {r["version"]}; каталог {r["catalog"]}.','', 'Отсутствие подтверждённых замечаний не означает соответствия при непроверенных областях.','']
     for d in r['documents']:lines+=['- '+d['name']+' — '+d['profile']['type']+'; SHA-256: '+d['sha256']]
+    summary=r['metrics'].get('normative_coverage')
+    if summary:
+        lines+=['','## Нормативный охват','',f'Уникальных пар документ–требование: {summary["unique_document_requirements"]}.',
+                'Состояния проверки: '+dumps(summary['states'])+'.',f'Подтверждённых замечаний с нормативным основанием: {summary["confirmed_normative_findings"]}.',summary['note'],'']
     for status,title in [('confirmed','Подтверждённые замечания'),('question','Вопросы'),('candidate','Предварительные кандидаты'),('verifying','На перепроверке'),('style','Редакторские предложения')]:
         lines+=['','## '+title,'']
         for f in r['findings']:

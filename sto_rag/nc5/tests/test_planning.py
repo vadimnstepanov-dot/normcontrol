@@ -30,7 +30,7 @@ class PlanningTests(unittest.TestCase):
   bs=[{'document':'d','locator':'p'+str(i),'text':t,'table_context':{'table':1,'row':1,'column':i,'column_name':t,'headers':headers}} for i,t in enumerate(headers)]
   rule={'requirement_id':'r','source_quote':'Таблица со следующими столбцами: «№ связи на схеме», «Источник», «Получатель», «Состав данных», «АС-инициатор взаимодействия», «Периодичность (временной регламент)», «Способ взаимодействия и протокол».'}
   found=column_findings({'id':'d','blocks':bs},rule,[compact_block(b) for b in bs])
-  self.assertEqual(len(found),1);self.assertEqual(found[0]['issue'],'В таблице отсутствуют обязательные колонки: Способ взаимодействия и протокол')
+  self.assertEqual(len(found),1);self.assertEqual(found[0]['issue'],'В таблице отсутствует обязательная колонка: Способ взаимодействия и протокол')
   rule['source_quote']=rule['source_quote'].replace(', «Способ взаимодействия и протокол»','')
   self.assertEqual(column_findings({'id':'d','blocks':bs},rule,[compact_block(b) for b in bs]),[])
  def test_closed_table_schema_is_recorded_without_model(self):

@@ -12,8 +12,10 @@ def obj(props):return {'type':'object','properties':props,'required':list(props)
 STR={'type':'string'};ARR=lambda schema:{'type':'array','items':schema}
 EVIDENCE=obj({'document':STR,'locator':STR,'quote':STR})
 FINDING=obj({'category':STR,'severity':STR,'issue':STR,'explanation':STR,'suggestion':STR,'kind':{'type':'string','enum':['violation','question','style']},'evidence':ARR(EVIDENCE),'requirement_id':STR,'search_query':STR})
+FINDING['properties']['scope_claim']=obj({'kind':{'type':'string','enum':['section','document','unknown']},'document':STR,'sections':ARR(STR)})
 FACT=obj({'entity':STR,'parameter':STR,'value':STR,'operator':STR,'unit':STR,'scope':STR,'environment':STR,'conditions':STR,'time_basis':STR,'evidence':ARR(EVIDENCE)})
 SCHEMA=obj({'findings':ARR(FINDING),'facts':ARR(FACT),'coverage':ARR(obj({'requirement_id':STR,'state':{'type':'string','enum':['checked','not_applicable','unknown','insufficient']},'reason':STR})), 'decisions':ARR(obj({'id':STR,'verdict':{'type':'string','enum':['confirmed','rejected','question']},'reason':STR,'suggestion':STR})), 'limitations':ARR(STR)})
+SCHEMA['properties']['coverage']['items']['properties']['checks']=ARR(obj({'obligation_id':STR,'state':{'type':'string','enum':['checked','not_applicable','unknown','insufficient']},'outcome':{'type':'string','enum':['satisfied','violated','not_applicable','unknown']},'reason':STR,'evidence':ARR(EVIDENCE)}))
 
 class BudgetError(ValueError):pass
 class OutputError(ValueError):
@@ -24,6 +26,7 @@ def output_budget(config,payload):
     # Real answers are normally a few hundred tokens.  Smaller stage budgets leave
     # room for larger source batches; an overflow is split and retried by Engine.
     cap={'language':1024,'logic':2048,'sto':1792,'cross':2048,'inter':2048,'verify':1280,'feedback':1280}.get(payload['stage'],config['output'])
+    if payload['stage']=='sto':cap=max(cap,512+320*sum(len(r.get('obligations',[])) for r in payload.get('requirements',[])))
     if payload['stage']=='verify' and config.get('verify_reasoning'):cap=2048
     return min(config['output'],max(cap,int(payload.get('_output_budget',0))))
 
@@ -73,6 +76,13 @@ class Client:
         else:
             schema['properties']['coverage']['items']['properties']['requirement_id']={'type':'string','enum':list(dict.fromkeys(rids))}
             schema['properties']['coverage']['maxItems']=len(set(rids))
+            schema['properties']['coverage']['items']['required'].append('checks')
+            obligations=[o['id'] for r in payload['requirements'] for o in r.get('obligations',[])]
+            if obligations:
+                checks=schema['properties']['coverage']['items']['properties']['checks']
+                checks['items']['properties']['obligation_id']={'type':'string','enum':list(dict.fromkeys(obligations))}
+                checks['maxItems']=len(set(obligations))
+        if payload['stage']=='sto':schema['properties']['findings']['items']['required'].append('scope_claim')
         if payload.get('validation_retry'):schema['properties']['coverage']['maxItems']=0
         if payload['stage'] in ('language','verify','sto','feedback','inter','cross'):schema['properties']['facts']['maxItems']=0
         if payload.get('images'):

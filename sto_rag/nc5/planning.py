@@ -146,8 +146,10 @@ def table_rows(doc):
 def norm(s):return re.sub(r'[^а-яa-z0-9]+',' ',s.casefold().replace('ё','е')).strip()
 
 def column_key(s):
+    s=re.sub(r'(?<=[а-яёa-z])[-\u00ad]\s*(?=[а-яёa-z])','',s,flags=re.I)
+    if re.fullmatch(r'\s*(?:№|N|номер)\s*',s,re.I):return 'number_unspecified'
     s=norm(s)
-    if re.search(r'^№|номер|^поток|^связ',s) or 'потока код' in s:return 'number'
+    if re.search(r'номер|^поток|^связ',s) or 'потока код' in s:return 'number'
     if 'источник' in s:return 'source'
     if 'получател' in s:return 'target'
     if 'состав дан' in s:return 'data'
@@ -169,9 +171,10 @@ def column_findings(doc,rule,blocks):
         actual=bs[0]['table_context'].get('headers',[]);keys={column_key(x) for x in actual}
         # A schema must first match the identity columns, not an arbitrary nearby table.
         if not {'source','target','data'}<=keys:continue
-        missing=[s for s in expected if column_key(s) not in keys]
+        missing=[s for s in expected if column_key(s) not in keys and not (column_key(s)=='number' and 'number_unspecified' in keys)]
         if not missing:continue
-        result.append({'category':'соответствие СТО','severity':'major','kind':'violation','issue':'В таблице отсутствуют обязательные колонки: '+', '.join(missing),'explanation':'Полный перечень заголовков таблицы сопоставлен с явно заданным перечнем колонок нормы. Не представлены: '+', '.join(missing)+'.','suggestion':'Добавить указанные параметры и заполнить их для применимых строк. Если сведения вынесены отдельно, обеспечить допустимую нормой однозначную связь.','evidence':[{'document':doc['id'],'locator':b['locator'],'quote':b['text']} for b in bs if b['text'].strip()],'requirement_id':rule['requirement_id'],'search_query':'','evidence_scope':'quoted_cell','comparison_method':'complete_table_headers','defect_key':digest(['headers',doc['id'],table,sorted(map(column_key,missing))])})
+        for missing_column in missing:
+            result.append({'category':'соответствие СТО','severity':'major','kind':'violation','issue':'В таблице отсутствует обязательная колонка: '+missing_column,'explanation':'Полный перечень заголовков таблицы сопоставлен с явно заданным перечнем колонок нормы. Не представлена: '+missing_column+'.','suggestion':'Добавить указанный параметр и заполнить его для применимых строк. Если сведения вынесены отдельно, обеспечить допустимую нормой однозначную связь.','evidence':[{'document':doc['id'],'locator':b['locator'],'quote':b['text']} for b in bs if b['text'].strip()],'requirement_id':rule['requirement_id'],'search_query':'','evidence_scope':'quoted_cell','comparison_method':'complete_table_headers','defect_key':digest(['headers',doc['id'],table,column_key(missing_column)])})
     return result
 
 def deterministic_rule_check(doc,rule,blocks):
@@ -185,16 +188,20 @@ def deterministic_rule_check(doc,rule,blocks):
         expected=re.findall('«([^»]+)»',text.split('со следующими столбцами',1)[1])
         chosen={b.get('table',{}).get('table') for b in blocks if b.get('table')}
         if len(expected)>=2:
+            results=[];locators=[]
             for (table,row),bs in table_rows(doc).items():
                 if table not in chosen or row!=1:continue
                 actual=bs[0]['table_context'].get('headers',[]);keys={column_key(x) for x in actual}
                 if not {'source','target','data'}<=keys:continue
+                if 'number_unspecified' in keys and any(column_key(s)=='number' for s in expected):return None
                 missing=[s for s in expected if column_key(s) not in keys]
+                results.append({'table':table,'missing':missing});locators.extend(b['locator'] for b in bs)
+            if results:
                 return {
                     'document':doc['id'],'requirement_id':rule['requirement_id'],'state':'checked',
                     'reason':'Полный набор заголовков таблицы сопоставлен программно с закрытым перечнем нормы'+
-                             (': отсутствуют '+', '.join(missing) if missing else '; все обязательные колонки присутствуют'),
-                    'method':'deterministic_complete_table_headers','locators':[b['locator'] for b in bs],
+                             '; проверено таблиц: '+str(len(results)),
+                    'method':'deterministic_complete_table_headers','locators':locators,'tables':results,
                 }
     # A title-only card can be closed by an exact heading from the full Word tree.
     normative=r'долж|следует|необходимо|привод|описыва|указыва|не допуска|запрещ|содерж|включа|предусматрив|устанавлива|выполня|оформля'

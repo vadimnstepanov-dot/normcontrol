@@ -22,7 +22,7 @@ def kind(text, example=False):
     if re.match(r'^Примечани',text,re.I):return 'пояснение'
     return 'справочная информация'
 
-def compile_catalog():
+def compile_catalog(activate=True):
     manifest=read(ROOT/'sto_rag/data/manifest.json'); sources=[];cards=[];ledger=[];profiles={};blocks_by_source={}
     for source in manifest['sources']:
         path=ROOT/source['file'];sha=digest(path.read_bytes())
@@ -82,7 +82,9 @@ def compile_catalog():
                 while '.' in clause:
                     clause=clause.rsplit('.',1)[0];ancestors.append(clause)
                 context=[x for x in bs[:segment[0][0]] if x.get('appendix','')==first.get('appendix','') and x.get('clause','') in ancestors and (x.get('kind')!='table_row')]
-                context+=bs[max(0,segment[0][0]-3):segment[0][0]]
+                context += [x for x in bs[max(0,segment[0][0]-3):segment[0][0]]
+                            if x.get('appendix','')==first.get('appendix','')
+                            and x.get('clause','') in [first.get('clause',''),*ancestors]]
                 parents=list({x['locator']:{'locator':x['locator'],'quote':x.get('raw_text',x['text'])} for x in context}.values())
                 card=dict(requirement_id=rid,version=1,source_id=sid,source_sha256=sha,document_name=source.get('standard') or source['file'],edition='2021' if source.get('standard') else '',
                     clause=first.get('clause',''),appendix=first.get('appendix',''),source_locator=first['locator'],source_quote=text,parent_context_refs=parents,
@@ -162,10 +164,29 @@ def compile_catalog():
     cat={'schema':1,'sources':sources,'profiles':list(profiles.values()),'document_registry':registry,'cards':cards,'ledger':ledger,'interdocument':inter,'coverage':{'fragments':len(ledger),'mapped':len(ledger),'lost':0,'semantic_review_pending':len(cards)},'limitations':['Карточки извлечены автоматически и точно привязаны к источнику. Семантическое выделение обязанностей, границы примеров и применимость требуют валидации перед объявлением полной нормативной полноты.']}
     from .planning import atomize_catalog
     cat=atomize_catalog(cat)
+    from .normative_contract import enrich_catalog
+    cat=enrich_catalog(cat,blocks_by_source)
     cat['version']=digest(cat)[:20];target=DATA/'catalogs'/cat['version']/'catalog.json';write(target,cat)
     old=read(DATA/'catalog-current.json') if (DATA/'catalog-current.json').exists() else None
     write(target.parent/'diff.json',{'previous':old,'current':cat['version'],'source_hashes':{s['source_id']:s['sha256'] for s in sources}})
-    write(DATA/'catalog-current.json',{'version':cat['version']});return cat
+    if activate:activate_catalog(cat['version'])
+    return cat
+
+
+def activate_catalog(version):
+    """Only publish a validated catalog while no production review owns the queue."""
+    import sqlite3
+    from .runtime import Lease
+    from .catalog_validation import audit
+    with Lease(str(DATA/'review.sqlite3')+'.worker.lock'):
+        path=DATA/'review.sqlite3'
+        if path.exists():
+            with sqlite3.connect(f'file:{path.as_posix()}?mode=ro',uri=True) as db:
+                if db.execute("select count(*) from jobs where state in ('running','preparing')").fetchone()[0]:
+                    raise RuntimeError('Нельзя менять действующий каталог во время проверки')
+        result=audit(version)
+        if result['errors']:raise ValueError('Каталог не прошёл проверку происхождения; действующая версия сохранена')
+        write(DATA/'catalog-current.json',{'version':version})
 
 def load_catalog(version=None):
     version=version or read(DATA/'catalog-current.json')['version'];return read(DATA/'catalogs'/version/'catalog.json')

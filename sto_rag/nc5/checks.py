@@ -30,6 +30,8 @@ def validate_finding(item,documents,cards):
     if rid:
         if rid not in cards:raise ValueError('Неизвестная нормативная ссылка')
         c=cards[rid];item['source']={k:c[k] for k in ('requirement_id','document_name','clause','appendix','source_locator','source_quote','source_sha256','validation_status')}
+        if c.get('check_stage')=='sto' and item.get('category')=='оформление':
+            item['original_category']=item['category'];item['category']='соответствие СТО'
         if item.get('reference_defect') and not re.search(r'ссыл|нумерац|номер|таблиц|рисунк',c['source_quote'],re.I):
             item['unverified_normative_source']=item.pop('source');item['requirement_id']='';item['category']='межраздельная логика'
             item['source_routing_note']='Приведённая норма не устанавливает правило нумерации или ссылок. Локальная ошибка проверяется самостоятельно, без приписывания ей нарушения этого пункта СТО.'

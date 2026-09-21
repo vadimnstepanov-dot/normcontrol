@@ -1,10 +1,23 @@
 import math
 import re
 from collections import Counter,defaultdict
+from functools import lru_cache
 from .documents import compact_block
 
+@lru_cache(maxsize=32768)
+def normalized_term(word):
+    if re.fullmatch(r'[а-яё]+',word):
+        from .quality_gate import morph
+        analyzer=morph()
+        if analyzer:
+            parsed=analyzer.parse(word)
+            if parsed and parsed[0].is_known:word=parsed[0].normal_form
+    return word[:7] if len(word)>7 else word
+
+
 def terms(text):
-    return [s[:7] if len(s)>7 else s for s in re.findall(r'[a-zа-яё0-9_]{3,}',text.lower()) if s not in ('который','которые','должен','должна','должны','системы','документа','требования')]
+    stop={'который','которые','должен','должна','должны','системы','документа','требования'}
+    return [normalized_term(s) for s in re.findall(r'[a-zа-яё0-9_]{3,}',text.lower()) if s not in stop]
 
 class Index:
     def __init__(self,docs):

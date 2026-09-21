@@ -44,6 +44,9 @@ def reference_payloads(doc,group_size=3):
 def rule_evidence(doc,rules,index=None):
     """Prefer the actual template section; retain a full-index search for counterevidence."""
     index=index or Index([doc]);anchors=[];selected=[]
+    if any(r.get('applicability_contract',{}).get('requires_project_facts') for r in rules):
+        from .normative_contract import applicability_facts
+        anchors.extend({'document':doc['id'],'locator':x['locator']} for x in applicability_facts(doc))
     for rule in rules:
         expected=rule.get('expected_evidence','').strip()
         number=re.search(r',\s*(\d+(?:\.\d+)*)\s*$',rule.get('clause','')) if rule.get('document_scope')=='template' else None
