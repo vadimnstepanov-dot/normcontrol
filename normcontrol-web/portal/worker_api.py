@@ -114,7 +114,10 @@ def status(request,pk):
     include_findings=request.GET.get('include_findings')=='1'
     try:run=WorkerRun.objects.get(batch=batch) if include_findings else WorkerRun.objects.defer('report').get(batch=batch)
     except WorkerRun.DoesNotExist:return JsonResponse({'state':'waiting','snapshot':{},'report':{}})
-    result={'state':run.state,'snapshot':run.snapshot,'report_available':bool(run.local_id),'heartbeat':run.heartbeat.isoformat(),'stale':(timezone.now()-run.heartbeat).total_seconds()>120,
+    snapshot=dict(run.snapshot or {})
+    if include_findings and not snapshot.get('task_errors'):
+        snapshot['task_errors']=[{'id':x.get('id','legacy-error'),'stage':x.get('stage','system'),'state':'failed','attempts':0,'error':x.get('error') or 'Причина не записана'} for x in run.report.get('tasks',[]) if x.get('state')=='failed'][:50]
+    result={'state':run.state,'snapshot':snapshot,'report_available':bool(run.local_id),'heartbeat':run.heartbeat.isoformat(),'stale':(timezone.now()-run.heartbeat).total_seconds()>120,
         'dispositions':{x.finding_id:{'state':x.state,'comment':x.comment,'author':x.author.get_full_name() or x.author.username,'updated':x.updated.isoformat()} for x in batch.finding_dispositions.select_related('author')}}
     if include_findings:result['findings_preview']=run.report.get('findings',[])[:60]
     return JsonResponse(result)

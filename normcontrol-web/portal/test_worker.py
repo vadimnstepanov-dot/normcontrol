@@ -48,11 +48,12 @@ class WorkerTests(TestCase):
         title=page.content.decode().split('<title>')[1].split('</title>')[0]
         self.assertNotIn('<form',title)
     def test_status_can_include_bounded_findings_preview(self):
-        WorkerRun.objects.create(batch=self.batch,worker='desktop',state='running',report={'findings':[{'id':str(i)} for i in range(80)]})
+        WorkerRun.objects.create(batch=self.batch,worker='desktop',state='running',report={'findings':[{'id':str(i)} for i in range(80)],'tasks':[{'id':'old-failure','stage':'sto','state':'failed','error':'Старый сбой'}]})
         self.client.force_login(self.user)
         response=self.client.get(f'/normcontol/batches/{self.batch.pk}/status/?include_findings=1')
         self.assertEqual(response.status_code,200)
         self.assertEqual(len(response.json()['findings_preview']),60)
+        self.assertEqual(response.json()['snapshot']['task_errors'][0]['error'],'Старый сбой')
     def test_frontend_wake_is_relayed_to_active_desktop_worker(self):
         run=WorkerRun.objects.create(batch=self.batch,worker='desktop',state='running',snapshot={})
         self.client.force_login(self.user)
