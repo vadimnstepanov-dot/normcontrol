@@ -224,6 +224,9 @@ def download(request,pk):
 @login_required
 def reports(request):return render(request,'reports.html',{'page':'reports','batches':batches(request).filter(worker_run__isnull=False).select_related('worker_run')[:100]})
 
+@login_required
+def rag(request):return render(request,'rag.html',{'page':'rag'})
+
 @administrator
 def llm(request):
     config=LLMConfig.objects.first() or LLMConfig()
