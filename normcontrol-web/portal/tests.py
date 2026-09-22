@@ -23,6 +23,11 @@ class PortalTests(TestCase):
         self.assertEqual(self.client.get('/LLM/').status_code,308)
         c=Client(enforce_csrf_checks=True);c.force_login(self.user)
         self.assertEqual(c.post('/normcontol/batches/new/',{}).status_code,403)
+    def test_theme_switch_is_available_on_private_and_login_pages(self):
+        login=self.client.get('/normcontol/login/')
+        self.assertContains(login,'data-theme-toggle');self.assertContains(login,'theme.js')
+        self.client.force_login(self.user)
+        self.assertContains(self.client.get('/normcontol/'),'data-theme-toggle')
     def test_upload_queue_and_ownership(self):
         self.client.force_login(self.user)
         response=self.client.post('/normcontol/batches/new/',{'name':'Проверка','profile':'chtz','checks':['sto','logic'],'documents':[document()]})
