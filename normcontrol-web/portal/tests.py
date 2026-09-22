@@ -47,6 +47,15 @@ class PortalTests(TestCase):
         WorkerRun.objects.create(batch=batch,worker='desktop',state='running',snapshot={'stages':{'sto':{'done':2,'pending':2}}})
         response=self.client.get('/normcontol/')
         self.assertContains(response,'Текущая проверка');self.assertContains(response,'href="#current-review"');self.assertContains(response,'id="current-review-ring"')
+    def test_dashboard_has_clickable_register_stats_errors_and_rag_sources(self):
+        self.client.force_login(self.user)
+        rag={'catalog':'catalog-1','requirements':850,'unresolved_dependencies':9,'settings':{'requirements_per_group':10,'evidence_chars_per_group':52000,'search_normalization':'Русская морфология'},'sources':[{'name':'СТО РЖД 04.001.1–2021','sha256':'abc123','blocks':100,'tables':4,'warnings':1}]}
+        WorkerPresence.objects.create(name='desktop',state='busy',details={'rag':rag})
+        batch=Batch.objects.create(owner=self.user,name='С ошибкой',status='running',checks=['sto'])
+        WorkerRun.objects.create(batch=batch,worker='desktop',state='running',snapshot={'task_errors':[{'id':'task-1','stage':'sto','state':'failed','attempts':2,'error':'Неверный JSON'}]})
+        response=self.client.get('/normcontol/')
+        self.assertContains(response,'data-register-filter="confirmed"');self.assertContains(response,'data-register-filter="task-error"')
+        self.assertContains(response,'Реестр замечаний и ошибок');self.assertContains(response,'СТО РЖД 04.001.1–2021');self.assertContains(response,'catalog-1')
     def test_invalid_upload_is_atomic(self):
         self.client.force_login(self.user)
         response=self.client.post('/normcontol/batches/new/',{'name':'Broken','profile':'chtz','checks':['sto'],'documents':[document(),SimpleUploadedFile('fake.docx',b'not a zip')]})
@@ -81,7 +90,7 @@ class PortalTests(TestCase):
         WorkerRun.objects.create(batch=batch,worker='desktop',state='running',local_id='local',snapshot={'stages':{'sto':{'done':2,'pending':1}},'findings':{'confirmed':1}},report={'findings':[{'id':'f1','status':'confirmed','severity':'major','category':'СТО','issue':'Проверка интерфейса','explanation':'Описание','evidence':[],'suggestion':'Исправить'}]})
         response=self.client.get('/normcontol/',{'batch':batch.pk})
         self.assertContains(response,'ТЕКУЩАЯ ПРОВЕРКА')
-        self.assertContains(response,'Выявленные замечания')
+        self.assertContains(response,'Реестр замечаний и ошибок')
         self.assertContains(response,'Проверка интерфейса')
 
     def test_user_can_set_finding_workflow_state(self):

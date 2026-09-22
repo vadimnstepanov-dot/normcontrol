@@ -18,6 +18,22 @@ from . import feedback
 # silently keep obsolete chunk/group sizes after a local tuning change.
 REMOTE_CONFIG_KEYS={'model','context','output','timeout'}
 
+def rag_summary(cfg=None):
+    """Public, non-secret description of the currently loaded normative RAG."""
+    from .catalog import load_catalog
+    cat=load_catalog();cfg=cfg or config()
+    return {'catalog':cat['version'],'requirements':len(cat.get('cards',[])),
+        'contract_version':cat.get('normative_contract_version'),
+        'unresolved_dependencies':sum(bool(c.get('unresolved_dependencies')) for c in cat.get('cards',[])),
+        'settings':{'requirements_per_group':cfg.get('sto_group_size'),
+            'evidence_chars_per_group':cfg.get('sto_group_chars'),
+            'reference_group_size':cfg.get('reference_group_size'),
+            'verification_group_size':cfg.get('verification_group_size'),
+            'search_normalization':'Русская морфология и точные цитаты'},
+        'sources':[{'name':s.get('document') or s.get('standard') or s.get('file','Источник'),
+            'sha256':s.get('sha256','')[:12],'blocks':s.get('blocks',0),'tables':s.get('tables',0),
+            'warnings':len(s.get('warnings',[]))} for s in cat.get('sources',[])]}
+
 def runtime_config(remote):
     local=config()
     local.update({k:v for k,v in remote.items() if k in REMOTE_CONFIG_KEYS})
@@ -47,13 +63,13 @@ def _run(url):
             key=feedback.submit(engine,f['local_id'],f['finding_id'],f['comment'],key=digest([url,f['lease'],f['id']]))
             decision=feedback.review(engine,key)
             request(f'/worker/{f["lease"]}/feedback/{f["id"]}/',{'state':decision['decision'],'decision':decision})
-    engine=Engine();state_path=DATA/'bridge-state.json';state=read(state_path) if state_path.exists() else None;started=None;last_probe=0.0;model_ok=False
+    engine=Engine();state_path=DATA/'bridge-state.json';state=read(state_path) if state_path.exists() else None;started=None;last_probe=0.0;model_ok=False;rag=rag_summary(engine.config)
     while True:
         try:
             active=any(j['state'] in ('running','preparing') for j in engine.store.jobs())
             if time.time()-last_probe>=15:
                 engine.client.probe();model_ok=True;last_probe=time.time()
-            request('/worker/ping/',{'worker':name,'state':('busy' if active else 'idle') if model_ok else 'error'})
+            request('/worker/ping/',{'worker':name,'state':('busy' if active else 'idle') if model_ok else 'error','rag':rag})
             if state is None:
                 if active:time.sleep(5);continue
                 settings=request('/worker/config/')

@@ -26,7 +26,8 @@ def valid_self_registration_name(name):
 
 def common(request):
     worker=WorkerPresence.objects.filter(heartbeat__gte=timezone.now()-timedelta(seconds=120)).order_by('-heartbeat').first()
-    return {'site_name':settings.SITE_NAME,'worker_online':bool(worker),'worker_state':worker.state if worker else 'offline'}
+    return {'site_name':settings.SITE_NAME,'worker_online':bool(worker),'worker_state':worker.state if worker else 'offline',
+        'rag_status':(worker.details or {}).get('rag') if worker else None}
 def audit(request,text):Audit.objects.create(user=request.user,action=text)
 def batches(request):return Batch.objects.all() if request.user.is_staff else Batch.objects.filter(owner=request.user)
 def administrator(view):return login_required(user_passes_test(lambda u:u.is_staff,login_url='dashboard')(view))

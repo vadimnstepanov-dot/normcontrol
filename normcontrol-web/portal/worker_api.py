@@ -32,7 +32,14 @@ def body(request):return json.loads(request.body or b'{}')
 def ping(request):
     data=body(request);state=data.get('state','idle')
     if state not in ('idle','busy','paused','error'):raise ValueError('state')
-    WorkerPresence.objects.update_or_create(name=str(data.get('worker','local'))[:100],defaults={'state':state})
+    raw=data.get('rag') if isinstance(data.get('rag'),dict) else {}
+    settings={k:raw.get('settings',{}).get(k) for k in ('requirements_per_group','evidence_chars_per_group','reference_group_size','verification_group_size','search_normalization')}
+    sources=[]
+    for item in raw.get('sources',[])[:30] if isinstance(raw.get('sources'),list) else []:
+        if isinstance(item,dict):sources.append({k:(str(item.get(k,''))[:240] if k in ('name','sha256') else int(item.get(k,0) or 0)) for k in ('name','sha256','blocks','tables','warnings')})
+    rag={'catalog':str(raw.get('catalog',''))[:64],'requirements':int(raw.get('requirements',0) or 0),'contract_version':raw.get('contract_version'),
+         'unresolved_dependencies':int(raw.get('unresolved_dependencies',0) or 0),'settings':settings,'sources':sources} if raw else {}
+    WorkerPresence.objects.update_or_create(name=str(data.get('worker','local'))[:100],defaults={'state':state,'details':{'rag':rag}})
     return JsonResponse({'ok':True})
 
 @worker

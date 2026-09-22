@@ -48,6 +48,7 @@ class EngineTests(unittest.TestCase):
         self.e.client.generate=lambda p:(_ for _ in ()).throw(TimeoutError('test timeout'))
         j=self.e.create([str(self.path)],{'check_sto':False});self.e.run(j)
         self.assertEqual(self.e.store.job(j)['state'],'partial');self.assertTrue(any(t['state']=='failed' for t in self.e.store.tasks(j)))
+        errors=self.e.status(j)['task_errors'];self.assertTrue(errors);self.assertIn('test timeout',errors[0]['error']);self.assertIn('stage',errors[0])
     def test_verification_backlog_is_drained_during_section_review(self):
         import copy
         generate=self.e.client.generate

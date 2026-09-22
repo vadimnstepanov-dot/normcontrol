@@ -4,6 +4,7 @@ const stateLabels={waiting:'Ожидает локального обработч
 const stageLabels={language:'Грамотность',logic:'Техническая логика',sto:'Требования СТО',cross:'Связи разделов',inter:'Связи документов',verify:'Перепроверка'};
 let findingFilter='confirmed';
 let liveFindings=[];
+let liveTaskErrors=[];
 let findingDispositions={};
 let selectedFinding='';
 
@@ -36,19 +37,42 @@ function renderFindingDetail(finding){
   const details=node('details','feedback-box'),summary=node('summary','','Отправить замечание модели на перепроверку'),form=node('form','review-feedback');form.dataset.url=reviewProgress.dataset.feedbackUrl;form.dataset.finding=finding.id||'';const token=document.createElement('input');token.type='hidden';token.name='csrfmiddlewaretoken';token.value=csrf();form.append(token);const textarea=node('textarea','feedback-text');textarea.name='comment';textarea.minLength=8;textarea.maxLength=6000;textarea.required=true;textarea.placeholder='Укажите, что следует перепроверить, и приведите доказательство.';const button=node('button','button secondary','Отправить');button.type='submit';const status=node('span','muted');status.setAttribute('role','status');form.append(textarea,button,status);details.append(summary,form);article.append(details);box.append(article);
 }
 
+function renderTaskErrorDetail(error){
+  const box=document.getElementById('finding-detail');if(!box)return;box.replaceChildren();
+  const article=node('article','finding-detail-card task-error-detail'),meta=node('div','finding-meta');
+  meta.append(node('span','badge major','Ошибка задачи'),node('span','',stageLabels[error.stage]||error.stage||'Конвейер'));
+  article.append(meta,node('h3','',error.stage==='system'?'Ошибка конвейера':`Не выполнен этап «${stageLabels[error.stage]||error.stage||'не определён'}»`));
+  const id=node('p','muted',`Задача: ${error.id||'не указан'} · попыток: ${error.attempts||0} · состояние: ${error.state||'failed'}`);
+  const reason=node('pre','task-error-message',error.error||'Причина не записана');
+  const note=node('div','notice compact error');note.append(node('span','notice-symbol','!'),node('div','', 'Результат этой задачи не учитывается как успешно проверенная область. Исправьте причину и повторите пакет или соответствующий этап.'));
+  article.append(id,node('h3','','Техническая причина'),reason,note);box.append(article);
+}
+
 function drawFindingRegister(){
   const container=document.getElementById('live-findings');if(!container)return;const query=(document.getElementById('finding-search')?.value||'').trim().toLocaleLowerCase('ru');
+  if(findingFilter==='task-error'){
+    const visible=liveTaskErrors.filter(item=>!query||[item.id,item.stage,stageLabels[item.stage],item.error].join(' ').toLocaleLowerCase('ru').includes(query));container.replaceChildren();
+    if(!visible.some(item=>'error:'+item.id===selectedFinding))selectedFinding=visible[0]?'error:'+visible[0].id:'';
+    for(const error of visible){const row=node('button','finding-row task-error-row'+('error:'+error.id===selectedFinding?' selected':''));row.type='button';row.append(node('span','finding-row-top'),node('strong','',stageLabels[error.stage]||error.stage||'Ошибка конвейера'),node('small','',error.error||'Причина не записана'));row.firstChild.append(node('span','badge major','Ошибка задачи'),node('span','disposition-state',`${error.attempts||0} попыток`));row.onclick=()=>{selectedFinding='error:'+error.id;drawFindingRegister();};container.append(row);}
+    const chosen=visible.find(item=>'error:'+item.id===selectedFinding);if(chosen)renderTaskErrorDetail(chosen);else document.getElementById('finding-detail')?.replaceChildren(node('div','empty-inline','Ошибок задач нет.'));
+    const empty=document.getElementById('no-live-findings');if(empty){empty.hidden=visible.length!==0;empty.textContent='Ошибок задач нет.';}return;
+  }
   const visible=liveFindings.filter(f=>(f.status===findingFilter||(findingFilter==='candidate'&&f.status==='verifying'))&&(!query||findingText(f).includes(query)));container.replaceChildren();
   if(!visible.some(f=>f.id===selectedFinding))selectedFinding=visible[0]?.id||'';
   for(const finding of visible){const row=node('button','finding-row'+(finding.id===selectedFinding?' selected':' '));row.type='button';row.dataset.findingStatus=finding.status||'candidate';const top=node('span','finding-row-top');top.append(node('span','badge '+(finding.severity||''),finding.category||'Замечание'),node('span','disposition-state',({'new':'Не рассмотрено','in_work':'В работе','fixed':'Исправлено','disputed':'Не согласен'})[findingDispositions[finding.id]?.state||'new']));row.append(top,node('strong','',finding.issue||'Замечание'),node('small','',shortAddress(finding)));row.onclick=()=>{selectedFinding=finding.id;drawFindingRegister();};container.append(row);}
   const chosen=visible.find(f=>f.id===selectedFinding);if(chosen)renderFindingDetail(chosen);else document.getElementById('finding-detail')?.replaceChildren(node('div','empty-inline','Выберите замечание слева.'));
-  const empty=document.getElementById('no-live-findings');if(empty)empty.hidden=visible.length!==0;
+  const empty=document.getElementById('no-live-findings');if(empty){empty.hidden=visible.length!==0;empty.textContent='По выбранным условиям записей нет.';}
 }
 
 function applyFindingFilter(){
   drawFindingRegister();
 }
-document.querySelectorAll('[data-finding-filter]').forEach(button=>button.addEventListener('click',()=>{findingFilter=button.dataset.findingFilter;document.querySelectorAll('[data-finding-filter]').forEach(item=>item.classList.toggle('selected',item===button));applyFindingFilter();}));
+function selectRegisterFilter(filter,scroll=false){
+  findingFilter=filter;selectedFinding='';document.querySelectorAll('[data-finding-filter]').forEach(item=>{const selected=item.dataset.findingFilter===filter;item.classList.toggle('selected',selected);item.setAttribute('aria-selected',selected?'true':'false');});applyFindingFilter();
+  if(scroll)document.getElementById('findings-register')?.scrollIntoView({behavior:'smooth',block:'start'});
+}
+document.querySelectorAll('[data-finding-filter]').forEach(button=>button.addEventListener('click',()=>selectRegisterFilter(button.dataset.findingFilter)));
+document.querySelectorAll('[data-register-filter]').forEach(button=>button.addEventListener('click',()=>selectRegisterFilter(button.dataset.registerFilter,true)));
 applyFindingFilter();
 document.getElementById('finding-search')?.addEventListener('input',drawFindingRegister);
 
@@ -78,6 +102,7 @@ if(reviewProgress){
       const counts=document.getElementById('review-counts');if(counts)counts.textContent=`Подтверждено: ${findings.confirmed||0} · Кандидаты: ${(findings.candidate||0)+(findings.verifying||0)} · Вопросы: ${findings.question||0}`;
       for(const [id,value] of [['count-confirmed',findings.confirmed||0],['count-candidate',(findings.candidate||0)+(findings.verifying||0)],['count-question',findings.question||0],['count-failed',failed]]){const element=document.getElementById(id);if(element)element.textContent=value;}
       const current=document.getElementById('review-current');if(current){const running=(snapshot.running||[]).map(task=>`${stageLabels[task.stage]||task.stage}, ${Math.floor(task.seconds||0)} с`).join('; '),heartbeat=data.heartbeat?new Date(data.heartbeat).toLocaleTimeString('ru'):'нет данных';current.textContent=snapshot.fatal_error||(running?'Сейчас: '+running:`Последнее продвижение: ${heartbeat}`);}
+      liveTaskErrors=Array.isArray(snapshot.task_errors)?snapshot.task_errors:[];if(snapshot.fatal_error&&!liveTaskErrors.some(item=>item.error===snapshot.fatal_error))liveTaskErrors.unshift({id:'fatal',stage:'system',state:'failed',attempts:1,error:snapshot.fatal_error});
       findingDispositions=data.dispositions||{};if(Array.isArray(data.findings_preview)){liveFindings=data.findings_preview;drawFindingRegister();}
     }catch(error){const state=document.getElementById('review-state');if(state)state.textContent='Не удалось обновить состояние';}
   };

@@ -99,4 +99,5 @@ class FindingDisposition(models.Model):
 class WorkerPresence(models.Model):
     name=models.CharField(max_length=100,primary_key=True)
     state=models.CharField(max_length=16,default='idle')
+    details=models.JSONField(default=dict)
     heartbeat=models.DateTimeField(auto_now=True)

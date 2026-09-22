@@ -2,7 +2,7 @@ import os
 from unittest.mock import patch
 from django.test import TestCase
 from django.contrib.auth.models import User
-from .models import Batch,WorkerRun,ReviewFeedback
+from .models import Batch,WorkerRun,ReviewFeedback,WorkerPresence
 
 class WorkerTests(TestCase):
     def setUp(self):
@@ -11,6 +11,13 @@ class WorkerTests(TestCase):
         self.assertEqual(self.client.post('/normcontol/worker/claim/',{}).status_code,403)
         r=self.client.post('/normcontol/worker/claim/',{'worker':'test'},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token);self.assertEqual(r.status_code,200);self.assertEqual(r.json()['job'],str(self.batch.pk))
         self.assertIsNone(self.client.post('/normcontol/worker/claim/',{},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token).json()['job'])
+    def test_ping_publishes_sanitized_rag_details(self):
+        rag={'catalog':'catalog-1','requirements':850,'contract_version':1,'unresolved_dependencies':9,
+             'settings':{'requirements_per_group':10,'evidence_chars_per_group':52000,'reference_group_size':3,'verification_group_size':3,'search_normalization':'Русская морфология'},
+             'sources':[{'name':'СТО РЖД 04.001.1–2021','sha256':'a'*12,'blocks':100,'tables':4,'warnings':2}]}
+        response=self.client.post('/normcontol/worker/ping/',{'worker':'desktop','state':'idle','rag':rag},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(response.status_code,200);saved=WorkerPresence.objects.get(name='desktop').details['rag']
+        self.assertEqual(saved['requirements'],850);self.assertEqual(saved['sources'][0]['name'],'СТО РЖД 04.001.1–2021')
     def test_claim_respects_admin_queue_order(self):
         priority=Batch.objects.create(owner=self.other,name='Приоритетный',status='waiting',queue_position=-1)
         result=self.client.post('/normcontol/worker/claim/',{'worker':'ordered'},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
