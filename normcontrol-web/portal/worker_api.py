@@ -13,6 +13,7 @@ from django.utils import timezone
 from django.core.paginator import Paginator
 from .models import Batch,Document,WorkerRun,ReviewFeedback,FindingDisposition,LLMConfig,WorkerPresence
 from .report_export import TYPE_LABELS, finding_type, task_errors, make_xlsx, make_docx
+from .access import visible_batch, editable_batch, can_edit
 
 def worker(view):
     @csrf_exempt
@@ -106,8 +107,7 @@ def feedback_result(request,lease,pk):
     f.state=data['state'];f.decision=data.get('decision',{});f.save();return JsonResponse({'ok':True})
 
 def owned(request,pk):
-    qs=Batch.objects.all() if request.user.is_staff else Batch.objects.filter(owner=request.user)
-    return get_object_or_404(qs,pk=pk)
+    return visible_batch(request.user,pk)
 
 @login_required
 def status(request,pk):
@@ -126,7 +126,7 @@ def status(request,pk):
 @login_required
 @require_POST
 def wake(request,pk):
-    batch=owned(request,pk)
+    batch=editable_batch(request.user,pk)
     with transaction.atomic():
         run=get_object_or_404(WorkerRun.objects.select_for_update(),batch=batch)
         if run.state not in ('preparing','running'):return JsonResponse({'active':False})
@@ -207,13 +207,14 @@ def report(request,pk):
     export_query=params.urlencode()
     limitations=[x if isinstance(x,str) else x.get('reason') or x.get('error') or json.dumps(x,ensure_ascii=False) for x in run.report.get('limitations',[])]
     return render(request,'review_report.html',{'batch':batch,'report':run.report,'findings':page,'report_limitations':limitations,'selected':selected,'page':'reports',
+        'can_manage':can_edit(request.user,batch),
         'finding_page':page,'filter_query':params.urlencode(),'filter_documents':documents,'filter_categories':categories,
         'filter_document':doc_filter,'filter_category':category,'filter_type':type_filter,'filter_types':TYPE_LABELS,'filter_severity':severity,'filter_text':query,'export_query':export_query,'task_errors':errors})
 
 @login_required
 @require_POST
 def feedback(request,pk):
-    batch=owned(request,pk);data=body(request);text=str(data.get('comment',''));fid=str(data.get('finding_id',''))
+    batch=editable_batch(request.user,pk);data=body(request);text=str(data.get('comment',''));fid=str(data.get('finding_id',''))
     if not 8<=len(text)<=6000:return JsonResponse({'error':'Комментарий: от 8 до 6000 символов'},status=400)
     run=get_object_or_404(WorkerRun,batch=batch)
     if fid not in {f['id'] for f in run.report.get('findings',[])}:return JsonResponse({'error':'Замечание не найдено'},status=404)
@@ -222,7 +223,7 @@ def feedback(request,pk):
 @login_required
 @require_POST
 def disposition(request,pk,finding_id):
-    batch=owned(request,pk);data=body(request);state=str(data.get('state',''));comment=str(data.get('comment','')).strip()[:6000]
+    batch=editable_batch(request.user,pk);data=body(request);state=str(data.get('state',''));comment=str(data.get('comment','')).strip()[:6000]
     allowed=dict(FindingDisposition.STATES)
     if state not in allowed:return JsonResponse({'error':'Неизвестный статус'},status=400)
     run=get_object_or_404(WorkerRun,batch=batch)

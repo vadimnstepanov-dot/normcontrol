@@ -260,3 +260,56 @@ class PortalTests(TestCase):
         second.refresh_from_db();first.refresh_from_db();self.assertLess(second.queue_position,first.queue_position)
         self.client.post(f'/normcontol/settings/queue/{second.pk}/action/',{'action':'cancel'})
         second.refresh_from_db();self.assertEqual(second.status,'cancelled')
+
+    def test_admin_controls_read_only_access_to_other_users_checks(self):
+        batch=Batch.objects.create(owner=self.other,name='Чужой пакет',status='completed',checks=['sto'])
+        doc=Document.objects.create(batch=batch,name='other.docx',file=document('other.docx'),size=100,sha256='a'*64)
+        WorkerRun.objects.create(batch=batch,worker='test',state='completed',report={'findings':[{'id':'finding-1','status':'confirmed','issue':'Тестовое замечание','category':'СТО','evidence':[]}]})
+        detail=f'/normcontol/batches/{batch.pk}/'
+        report=f'/normcontol/batches/{batch.pk}/report/'
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(detail).status_code,404)
+        self.assertEqual(self.client.get(report).status_code,404)
+        self.assertEqual(self.client.post(f'/normcontol/settings/users/{self.user.pk}/view-others/').status_code,302)
+
+        self.client.force_login(self.admin)
+        setting=f'/normcontol/settings/users/{self.user.pk}/view-others/'
+        self.assertContains(self.client.get('/normcontol/settings/users/'),'Видеть чужие проверки')
+        self.assertRedirects(self.client.post(setting),'/normcontol/settings/users/')
+        self.assertTrue(AccessProfile.objects.get(user=self.user).can_view_others)
+
+        self.client.force_login(self.user)
+        self.assertContains(self.client.get('/normcontol/'),'Чужой пакет')
+        self.assertContains(self.client.get('/normcontol/reports/'),'Чужой пакет')
+        page=self.client.get(detail)
+        self.assertContains(page,'Чужой пакет')
+        self.assertNotContains(page,'Повторный нормоконтроль')
+        self.assertEqual(self.client.get(f'/normcontol/documents/{doc.pk}/download/').status_code,200)
+        self.assertEqual(self.client.get(report).status_code,200)
+        self.assertEqual(self.client.get(f'/normcontol/batches/{batch.pk}/register/').status_code,200)
+        self.assertEqual(self.client.get(f'/normcontol/batches/{batch.pk}/status/').status_code,200)
+        self.assertEqual(self.client.post(f'/normcontol/batches/{batch.pk}/action/',{'action':'archive'}).status_code,404)
+        self.assertEqual(self.client.post(f'/normcontol/batches/{batch.pk}/wake/').status_code,404)
+        self.assertEqual(self.client.post(f'/normcontol/batches/{batch.pk}/feedback/',data={'finding_id':'finding-1','comment':'Проверить отдельно'},content_type='application/json').status_code,404)
+        self.assertEqual(self.client.post(f'/normcontol/batches/{batch.pk}/findings/finding-1/disposition/',data={'state':'fixed'},content_type='application/json').status_code,404)
+        self.client.force_login(self.admin)
+        self.client.post(setting)
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(detail).status_code,404)
+
+    def test_admin_can_assign_and_remove_administrator_role(self):
+        self.client.force_login(self.user)
+        path=f'/normcontol/settings/users/{self.other.pk}/admin/'
+        self.assertEqual(self.client.post(path).status_code,302)
+        self.other.refresh_from_db();self.assertFalse(self.other.is_staff)
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.post(path).status_code,302)
+        self.other.refresh_from_db();self.assertTrue(self.other.is_staff)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get('/normcontol/settings/users/').status_code,200)
+        self.assertEqual(self.client.post(f'/normcontol/settings/users/{self.other.pk}/admin/').status_code,403)
+        self.assertEqual(self.client.post(f'/normcontol/settings/users/{self.user.pk}/view-others/').status_code,302)
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.post(path).status_code,302)
+        self.other.refresh_from_db();self.assertFalse(self.other.is_staff)
+        self.assertEqual(self.client.post(f'/normcontol/settings/users/{self.admin.pk}/admin/').status_code,403)

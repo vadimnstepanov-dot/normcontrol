@@ -34,6 +34,11 @@ function renderFindingDetail(finding){
   const suggestion=node('p');suggestion.append(node('strong','','Предложение: '),document.createTextNode(finding.suggestion||''));article.append(suggestion);
   if(finding.source){const source=document.createElement('details');source.className='finding-source';source.append(node('summary','','Основание СТО'),node('p','muted',`${finding.source.document_name||''} · ${finding.source.clause||''} · ${finding.source.source_locator||''}`));article.append(source);}
   if(finding.verification){const verification=document.createElement('details');verification.className='finding-source';verification.append(node('summary','','Результат перепроверки'),node('p','muted',finding.verification));article.append(verification);}
+  if(reviewProgress?.dataset.canManage==='0'){
+    const disposition=findingDispositions[finding.id];
+    if(disposition?.author)article.append(node('p','muted',`Решение специалиста: ${disposition.state||''} · ${disposition.author}`));
+    box.append(article);return;
+  }
   const disposition=findingDispositions[finding.id]||{state:'new',comment:''};const workflow=node('div','finding-workflow');workflow.append(node('strong','','Решение специалиста'));
   const states=[['new','Не рассмотрено'],['in_work','В работу'],['fixed','Исправлено'],['disputed','Не согласен']];
   for(const [value,label] of states){const button=node('button','button '+(disposition.state===value?'primary':'subtle'),label);button.type='button';button.onclick=async()=>{let comment='';if(value==='disputed'){comment=window.prompt('Укажите обоснование несогласия',disposition.comment||'')||'';if(comment.length<8)return;}const url=reviewProgress.dataset.dispositionUrl.replace('__FINDING__',encodeURIComponent(finding.id));const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:value,comment})});if(!response.ok)return;findingDispositions[finding.id]={...(await response.json()),comment};drawFindingRegister();};workflow.append(button);}
@@ -112,7 +117,7 @@ loadRegister();
 const reviewProgress=document.getElementById('review-progress');
 if(reviewProgress){
   let reviewActive=false,lastWake=0;
-  const wake=async force=>{if(!reviewActive||!reviewProgress.dataset.wakeUrl)return;if(!force&&Date.now()-lastWake<600000)return;const response=await fetch(reviewProgress.dataset.wakeUrl,{method:'POST',headers:{'X-CSRFToken':csrf()}});if(response.ok)lastWake=Date.now();};
+  const wake=async force=>{if(reviewProgress.dataset.canManage==='0'||!reviewActive||!reviewProgress.dataset.wakeUrl)return;if(!force&&Date.now()-lastWake<600000)return;const response=await fetch(reviewProgress.dataset.wakeUrl,{method:'POST',headers:{'X-CSRFToken':csrf()}});if(response.ok)lastWake=Date.now();};
   const refresh=async()=>{
     try{
       const response=await fetch(reviewProgress.dataset.url);if(!response.ok)return;

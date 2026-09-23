@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from .models import Batch,Document,LLMConfig,Audit,LoginAttempt,AccessProfile,WorkerPresence
 from .forms import BatchForm,LLMForm,CreateUserForm,AutoRegistrationForm
+from .access import visible_batches,editable_batches,can_edit
 
 SELF_REGISTRATION_PREFIX='RZDTECH/'
 SELF_REGISTRATION_SESSION='self_registration_username'
@@ -29,7 +30,7 @@ def common(request):
     return {'site_name':settings.SITE_NAME,'worker_online':bool(worker),'worker_state':worker.state if worker else 'offline',
         'rag_status':(worker.details or {}).get('rag') if worker else None}
 def audit(request,text):Audit.objects.create(user=request.user,action=text)
-def batches(request):return Batch.objects.all() if request.user.is_staff else Batch.objects.filter(owner=request.user)
+def batches(request):return visible_batches(request.user)
 def administrator(view):return login_required(user_passes_test(lambda u:u.is_staff,login_url='dashboard')(view))
 def next_queue_position():return (Batch.objects.filter(status='waiting').aggregate(value=Max('queue_position'))['value'] or 0)+1
 
@@ -102,6 +103,7 @@ def dashboard(request):
     if selected and hasattr(selected,'worker_run'):
         preview=selected.worker_run.report.get('findings',[])[:60]
     return render(request,'dashboard.html',{'page':'batches','batches':visible,'selected_batch':selected,'preview_findings':preview,
+        'can_manage_selected':bool(selected and can_edit(request.user,selected)),
         'total':qs.filter(archived=False).count(),'waiting':qs.filter(archived=False,status='waiting').count(),
         'document_count':Document.objects.filter(batch__in=qs.filter(archived=False)).count(),'query':query,'state':state,'archived':archived})
 
@@ -153,12 +155,12 @@ def new_batch(request):
 @login_required
 def detail(request,pk):
     batch=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
-    return render(request,'batch.html',{'batch':batch,'page':'batches'})
+    return render(request,'batch.html',{'batch':batch,'page':'batches','can_manage':can_edit(request.user,batch)})
 
 @login_required
 @require_POST
 def add_documents(request,pk):
-    source=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
+    source=get_object_or_404(editable_batches(request.user).prefetch_related('documents'),pk=pk)
     if not source.can_rerun or source.archived:return HttpResponseForbidden('Добавление файлов доступно после остановки или завершения проверки')
     files=request.FILES.getlist('documents');existing=list(source.documents.all());saved=[]
     try:
@@ -171,8 +173,8 @@ def add_documents(request,pk):
         if used+sum(f.size for f in files)>2*1024**3:raise ValueError('Хранилище заполнено. Обратитесь к администратору.')
         prepared=[(f,inspect_word(f)) for f in files]
         with transaction.atomic():
-            batches(request).filter(pk=pk).update(status=F('status'))
-            source=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
+            editable_batches(request.user).filter(pk=pk).update(status=F('status'))
+            source=get_object_or_404(editable_batches(request.user).prefetch_related('documents'),pk=pk)
             if not source.can_rerun or source.archived:raise ValueError('Состояние пакета изменилось. Обновите страницу.')
             if source.reruns.filter(status__in=('prepared','waiting','preparing','running','paused')).exists():raise ValueError('Для этого пакета уже подготовлена или выполняется новая проверка.')
             revision=Batch.objects.create(owner=source.owner,name=(source.name+' — дополнен')[:160],profile=source.profile,checks=list(source.checks),status='waiting',source_batch=source,fresh_review=True,queue_position=next_queue_position())
@@ -195,7 +197,7 @@ def delete_batch(request,pk):
 @login_required
 @require_POST
 def batch_action(request,pk):
-    batch=get_object_or_404(batches(request),pk=pk);action=request.POST.get('action')
+    batch=get_object_or_404(editable_batches(request.user),pk=pk);action=request.POST.get('action')
     if action=='delete':
         if not request.user.is_staff:return HttpResponseForbidden('Удаление доступно только администратору')
         if request.POST.get('confirm_delete')!=str(batch.pk):return HttpResponseForbidden('Подтвердите удаление пакета')
@@ -219,8 +221,8 @@ def batch_action(request,pk):
     if action in ('rerun','retry'):
         with transaction.atomic():
             # Acquire a write lock before checking for an existing repeat (also on SQLite).
-            batches(request).filter(pk=pk).update(status=F('status'))
-            batch=get_object_or_404(batches(request),pk=pk)
+            editable_batches(request.user).filter(pk=pk).update(status=F('status'))
+            batch=get_object_or_404(editable_batches(request.user),pk=pk)
             if not batch.can_rerun:return HttpResponseForbidden('Дождитесь завершения или отмените текущую проверку')
             repeated=batch.reruns.filter(status__in=('waiting','preparing','running','paused')).first()
             if repeated:
@@ -254,7 +256,7 @@ def download(request,pk):
     return FileResponse(doc.file.open('rb'),as_attachment=True,filename=doc.name,content_type=kind)
 
 @login_required
-def reports(request):return render(request,'reports.html',{'page':'reports','batches':batches(request).filter(worker_run__isnull=False).select_related('worker_run')[:100]})
+def reports(request):return render(request,'reports.html',{'page':'reports','batches':batches(request).filter(worker_run__isnull=False).select_related('worker_run','owner')[:100]})
 
 @login_required
 def rag(request):return render(request,'rag.html',{'page':'rag'})
@@ -289,7 +291,33 @@ def users(request):
     if request.method=='POST' and form.is_valid():
         user=form.save();AccessProfile.objects.create(user=user,must_change_password=True)
         audit(request,'Создан пользователь '+user.username);messages.success(request,'Пользователь создан. При первом входе потребуется сменить пароль.');return redirect('users')
-    return render(request,'users.html',{'users':User.objects.order_by('username'),'form':form,'page':'users'})
+    return render(request,'users.html',{'users':User.objects.select_related('accessprofile').order_by('username'),'form':form,'page':'users'})
+
+@administrator
+@require_POST
+def toggle_view_others(request,pk):
+    user=get_object_or_404(User,pk=pk)
+    if user.is_staff:return HttpResponseForbidden('Администраторы уже видят все проверки.')
+    with transaction.atomic():
+        profile,_=AccessProfile.objects.select_for_update().get_or_create(user=user)
+        profile.can_view_others=not profile.can_view_others
+        profile.save(update_fields=['can_view_others'])
+        audit(request,('Разрешён' if profile.can_view_others else 'Отозван')+' просмотр чужих проверок: '+user.username)
+    messages.success(request,'Доступ к чужим проверкам включён.' if profile.can_view_others else 'Доступ к чужим проверкам отключён.')
+    return redirect('users')
+
+@administrator
+@require_POST
+def toggle_admin(request,pk):
+    with transaction.atomic():
+        user=get_object_or_404(User.objects.select_for_update(),pk=pk)
+        if user==request.user and user.is_staff:return HttpResponseForbidden('Нельзя снять роль администратора у собственной учётной записи.')
+        if user.is_staff and User.objects.filter(is_staff=True,is_active=True).count()<=1:return HttpResponseForbidden('Нельзя снять роль последнего активного администратора.')
+        user.is_staff=not user.is_staff
+        user.save(update_fields=['is_staff'])
+        audit(request,('Назначен администратором: ' if user.is_staff else 'Снята роль администратора: ')+user.username)
+    messages.success(request,'Роль администратора назначена.' if user.is_staff else 'Роль администратора снята.')
+    return redirect('users')
 
 @administrator
 @require_POST

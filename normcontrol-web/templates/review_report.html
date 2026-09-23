@@ -2,6 +2,7 @@
 {% block title %}Отчёт · {{ batch.name }}{% endblock %}
 {% block content %}
 <a class="back-link" href="{% url 'batch' batch.pk %}">← {{ batch.name }}</a>
+{% if not can_manage %}<div class="notice compact"><span class="notice-symbol">◇</span><div><strong>Только просмотр</strong><p>Отчёт пользователя {{ batch.owner.get_full_name|default:batch.owner.username }}. Решения и запросы на перепроверку доступны владельцу и администратору.</p></div></div>{% endif %}
 {% if report.metrics.normative_coverage %}
 <section class="panel" aria-label="Нормативный охват">
 <h2>Проверка требований СТО</h2>
@@ -37,7 +38,7 @@
   <p><b>Предложение:</b> {{ finding.suggestion }}</p>
   {% if finding.source %}<details><summary>Основание: {{ finding.source.document_name }} · {{ finding.source.clause }}</summary><p class="muted">{{ finding.source.source_locator }} · {{ finding.source.validation_status }}</p><blockquote>{{ finding.source.source_quote }}</blockquote></details>{% endif %}
   <p class="muted">{{ finding.verification }}</p>
-  {% if finding.status != 'rejected' %}<details><summary>Оспорить или уточнить</summary><form class="review-feedback" data-url="{% url 'batch-feedback' batch.pk %}" data-finding="{{ finding.id }}">{% csrf_token %}<textarea name="comment" required minlength="8" maxlength="6000" class="feedback-text"></textarea><button class="button secondary">Отправить</button><span role="status"></span></form></details>{% endif %}
+  {% if can_manage and finding.status != 'rejected' %}<details><summary>Оспорить или уточнить</summary><form class="review-feedback" data-url="{% url 'batch-feedback' batch.pk %}" data-finding="{{ finding.id }}">{% csrf_token %}<textarea name="comment" required minlength="8" maxlength="6000" class="feedback-text"></textarea><button class="button secondary">Отправить</button><span role="status"></span></form></details>{% endif %}
 </section>
 {% empty %}{% if selected != 'task-error' %}<section class="panel form-panel"><p>Замечаний с выбранными фильтрами пока нет.</p></section>{% endif %}{% endfor %}
 <nav class="report-pagination" aria-label="Страницы замечаний">

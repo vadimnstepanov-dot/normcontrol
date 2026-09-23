@@ -13,6 +13,8 @@ routes.append(path('worker/feedback/',w.pending_feedback))
 routes.extend([path('worker/config/',w.configuration),path('settings/llm/probe/',v.llm_probe,name='llm-probe')])
 routes.append(path('worker/ping/',w.ping))
 routes.append(path('batches/<uuid:pk>/delete/',v.delete_batch,name='batch-delete'))
+routes.append(path('settings/users/<int:pk>/view-others/',v.toggle_view_others,name='user-view-others'))
+routes.append(path('settings/users/<int:pk>/admin/',v.toggle_admin,name='user-admin'))
 
 def legacy(request,rest=''):
     location='/normcontol/'+rest
