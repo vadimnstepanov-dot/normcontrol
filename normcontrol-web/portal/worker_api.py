@@ -148,7 +148,7 @@ def register(request,pk):
     pages=Paginator(records,50)
     page=pages.get_page(request.GET.get('page'))
     available_types={finding_type(f.get('category')) for f in (run.report or {}).get('findings',[])}
-    return JsonResponse({'records':list(page.object_list),'total':pages.count,'page':page.number,'pages':pages.num_pages,
+    return JsonResponse({'records':list(page.object_list),'total':pages.count,'page':page.number,'pages':pages.num_pages,'report_available':bool(run.report),
         'types':[{'value':key,'label':label} for key,label in TYPE_LABELS.items() if key in available_types],
         'dispositions':{x.finding_id:{'state':x.state,'comment':x.comment,'author':x.author.get_full_name() or x.author.username,'updated':x.updated.isoformat()} for x in batch.finding_dispositions.select_related('author')}})
 

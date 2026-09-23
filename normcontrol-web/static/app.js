@@ -81,6 +81,7 @@ async function loadRegister(){
   if(type&&findingFilter!=='task-error')url.searchParams.set('type',type);if(query)url.searchParams.set('q',query);
   try{
     const response=await fetch(url);if(!response.ok)throw new Error('Реестр пока недоступен');const data=await response.json();if(current!==registerRequest)return;
+    registerPanel.querySelectorAll('.register-exports [data-export-format]').forEach(link=>link.hidden=!data.report_available);
     liveFindings=data.records.filter(item=>item.kind==='finding').map(item=>item.value);
     liveTaskErrors=data.records.filter(item=>item.kind==='task-error').map(item=>item.value);
     findingDispositions=data.dispositions||{};updateFindingTypes(data.types||[]);
