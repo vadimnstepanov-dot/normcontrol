@@ -155,6 +155,38 @@ def detail(request,pk):
     batch=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
     return render(request,'batch.html',{'batch':batch,'page':'batches'})
 
+@login_required
+@require_POST
+def add_documents(request,pk):
+    source=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
+    if not source.can_rerun or source.archived:return HttpResponseForbidden('Добавление файлов доступно после остановки или завершения проверки')
+    files=request.FILES.getlist('documents');existing=list(source.documents.all());saved=[]
+    try:
+        if request.POST.get('confirm_restart')!='1':raise ValueError('Подтвердите полный перезапуск нормоконтроля после добавления файлов.')
+        if source.reruns.filter(status__in=('prepared','waiting','preparing','running','paused')).exists():raise ValueError('Для этого пакета уже подготовлена или выполняется новая проверка. Остановите её либо добавьте документы в последнюю версию.')
+        if not files:raise ValueError('Выберите хотя бы один документ Word.')
+        if len(existing)+len(files)>20:raise ValueError('В одном пакете допускается не более 20 документов.')
+        if sum(d.size for d in existing)+sum(f.size for f in files)>100*1024*1024:raise ValueError('Общий размер пакета — не более 100 МБ.')
+        used=Document.objects.values('file').annotate(stored_size=Max('size')).aggregate(total=Sum('stored_size'))['total'] or 0
+        if used+sum(f.size for f in files)>2*1024**3:raise ValueError('Хранилище заполнено. Обратитесь к администратору.')
+        prepared=[(f,inspect_word(f)) for f in files]
+        with transaction.atomic():
+            batches(request).filter(pk=pk).update(status=F('status'))
+            source=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
+            if not source.can_rerun or source.archived:raise ValueError('Состояние пакета изменилось. Обновите страницу.')
+            if source.reruns.filter(status__in=('prepared','waiting','preparing','running','paused')).exists():raise ValueError('Для этого пакета уже подготовлена или выполняется новая проверка.')
+            revision=Batch.objects.create(owner=source.owner,name=(source.name+' — дополнен')[:160],profile=source.profile,checks=list(source.checks),status='waiting',source_batch=source,fresh_review=True,queue_position=next_queue_position())
+            Document.objects.bulk_create([Document(batch=revision,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline) for d in source.documents.all()])
+            for f,meta in prepared:
+                doc=Document(batch=revision,name=Path(f.name.replace('\\','/')).name[:240],size=f.size,**meta)
+                doc.file.save(f.name,f,save=False);saved.append(doc.file.path);doc.save()
+            audit(request,'Дополнен пакет '+str(source.pk)+'; создана версия '+str(revision.pk))
+        messages.success(request,'Файлы добавлены. Новая версия пакета поставлена в очередь на полный нормоконтроль с первого этапа.')
+        return redirect('batch',pk=revision.pk)
+    except ValueError as e:
+        for path in saved:Path(path).unlink(missing_ok=True)
+        messages.error(request,str(e));return redirect('batch',pk=source.pk)
+
 @administrator
 def delete_batch(request,pk):
     batch=get_object_or_404(Batch,pk=pk)
