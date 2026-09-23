@@ -47,6 +47,24 @@ class PortalTests(TestCase):
         WorkerRun.objects.create(batch=batch,worker='desktop',state='running',snapshot={'stages':{'sto':{'done':2,'pending':2}}})
         response=self.client.get('/normcontol/')
         self.assertContains(response,'Текущая проверка');self.assertContains(response,'href="#current-review"');self.assertContains(response,'id="current-review-ring"')
+    def test_batch_history_collapses_to_three_and_expands_for_search_or_selection(self):
+        self.client.force_login(self.user)
+        for n in range(5):Batch.objects.create(owner=self.user,name=f'Пакет {n}',status='completed')
+        page=self.client.get('/normcontol/')
+        self.assertFalse(page.context['expand_batches'])
+        self.assertEqual(page.context['hidden_batch_count'],2)
+        self.assertContains(page,'Показаны 3 из 5 проверок')
+        self.assertContains(page,'data-history-extra hidden',count=2)
+        self.assertContains(page,'aria-expanded="false"')
+        search=self.client.get('/normcontol/',{'q':'Пакет'})
+        self.assertTrue(search.context['expand_batches'])
+        self.assertContains(search,'Показаны все 5 проверок')
+        self.assertNotContains(search,'data-history-extra hidden')
+        older_id=page.context['batches'][3].pk
+        older=self.client.get('/normcontol/',{'batch':older_id})
+        self.assertEqual(older.context['selected_batch'].pk,older_id)
+        self.assertTrue(older.context['expand_batches'])
+        self.assertContains(older,'aria-expanded="true"')
     def test_dashboard_has_clickable_register_stats_and_errors(self):
         self.client.force_login(self.user)
         rag={'catalog':'catalog-1','requirements':850,'unresolved_dependencies':9,'settings':{'requirements_per_group':10,'evidence_chars_per_group':52000,'search_normalization':'Русская морфология'},'sources':[{'name':'СТО РЖД 04.001.1–2021','sha256':'abc123','blocks':100,'tables':4,'warnings':1}]}

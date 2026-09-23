@@ -84,7 +84,7 @@ def sign_out(request):logout(request);return redirect('login')
 
 @login_required
 def dashboard(request):
-    qs=batches(request);archived=request.GET.get('archive')=='1';active=qs.filter(archived=archived)
+    qs=batches(request);archived=request.GET.get('archive')=='1';active=qs.filter(archived=archived).order_by('-created','-pk')
     query=request.GET.get('q','')[:160]
     if query:active=active.filter(name__icontains=query)
     state=request.GET.get('state','')
@@ -99,10 +99,12 @@ def dashboard(request):
     if selected is None:
         selected=qs.filter(archived=False,worker_run__isnull=False).prefetch_related('documents').select_related('worker_run').first()
     if selected is None and visible:selected=visible[0]
+    expand_batches=bool(query or state or (selected_id and selected and any(item.pk==selected.pk for item in visible[3:])))
     preview=[]
     if selected and hasattr(selected,'worker_run'):
         preview=selected.worker_run.report.get('findings',[])[:60]
     return render(request,'dashboard.html',{'page':'batches','batches':visible,'selected_batch':selected,'preview_findings':preview,
+        'expand_batches':expand_batches,'hidden_batch_count':max(len(visible)-3,0),
         'can_manage_selected':bool(selected and can_edit(request.user,selected)),
         'total':qs.filter(archived=False).count(),'waiting':qs.filter(archived=False,status='waiting').count(),
         'document_count':Document.objects.filter(batch__in=qs.filter(archived=False)).count(),'query':query,'state':state,'archived':archived})

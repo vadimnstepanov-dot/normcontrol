@@ -114,6 +114,20 @@ document.getElementById('register-previous')?.addEventListener('click',()=>{if(r
 document.getElementById('register-next')?.addEventListener('click',()=>{registerPage++;loadRegister();});
 loadRegister();
 
+const historyToggle=document.getElementById('batch-history-toggle');
+if(historyToggle){
+  const extraRows=[...document.querySelectorAll('#batch-history-rows tr[data-history-extra]')];
+  const count=document.getElementById('batch-history-count');
+  historyToggle.addEventListener('click',()=>{
+    const expanded=historyToggle.getAttribute('aria-expanded')!=='true';
+    extraRows.forEach(row=>{row.hidden=!expanded;});
+    historyToggle.setAttribute('aria-expanded',String(expanded));
+    document.getElementById('batch-history')?.classList.toggle('is-expanded',expanded);
+    historyToggle.querySelector('.batch-history-toggle-label').textContent=expanded?'Свернуть список':`Показать ещё ${historyToggle.dataset.extra}`;
+    count.textContent=expanded?`Показаны все ${historyToggle.dataset.total} проверок`:`Показаны 3 из ${historyToggle.dataset.total} проверок`;
+  });
+}
+
 const reviewProgress=document.getElementById('review-progress');
 if(reviewProgress){
   let reviewActive=false,lastWake=0;
