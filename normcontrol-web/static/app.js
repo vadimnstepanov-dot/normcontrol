@@ -1,6 +1,6 @@
 'use strict';
 
-const stateLabels={waiting:'Ожидает локального обработчика',preparing:'Чтение и планирование',running:'Проверяется',paused:'Приостановлена',partial:'Завершена с непроверенными областями',completed:'Проверка завершена',failed:'Ошибка выполнения',cancelled:'Отменена'};
+const stateLabels={prepared:'Готова к запуску',waiting:'Ожидает локального обработчика',preparing:'Чтение и планирование',running:'Проверяется',paused:'Приостановлена',partial:'Завершена с непроверенными областями',completed:'Проверка завершена',failed:'Ошибка выполнения',cancelled:'Отменена'};
 const stageLabels={language:'Грамотность',logic:'Техническая логика',sto:'Требования СТО',cross:'Связи разделов',inter:'Связи документов',verify:'Перепроверка'};
 let findingFilter='confirmed';
 let liveFindings=[];
@@ -115,6 +115,11 @@ document.getElementById('register-next')?.addEventListener('click',()=>{register
 loadRegister();
 
 const historyToggle=document.getElementById('batch-history-toggle');
+document.getElementById('batch-history-rows')?.addEventListener('click',event=>{
+  if(event.target.closest('a,button,input,select,textarea'))return;
+  const link=event.target.closest('tr')?.querySelector('a.row-title');
+  if(link)window.location.assign(link.href);
+});
 if(historyToggle){
   const extraRows=[...document.querySelectorAll('#batch-history-rows tr[data-history-extra]')];
   const count=document.getElementById('batch-history-count');
@@ -149,8 +154,8 @@ if(reviewProgress){
       const currentPercent=document.getElementById('current-review-percent');if(currentPercent)currentPercent.textContent=rounded+'%';
       const currentState=document.getElementById('current-review-button-state');if(currentState)currentState.textContent=stateLabels[data.state]||data.state;
       const currentButton=document.getElementById('current-review-button');if(currentButton)currentButton.classList.toggle('is-active',['waiting','preparing','running'].includes(data.state));
-      const progressText=document.getElementById('review-progress-text');if(progressText)progressText.textContent=`Завершено ${done} из ${total} задач${snapshot.eta_provisional?' · план уточняется':''}`;
-      const eta=document.getElementById('review-eta');if(eta)eta.textContent=snapshot.eta_seconds?`${snapshot.eta_provisional?'Предварительно: ':'Осталось: '}${Math.ceil(snapshot.eta_seconds[0]/60)}–${Math.ceil(snapshot.eta_seconds[1]/60)} мин`:(['completed','partial','failed','cancelled'].includes(data.state)?'Обработка остановлена или завершена':'Прогноз появится после первых задач');
+      const progressText=document.getElementById('review-progress-text');if(progressText)progressText.textContent=data.state==='prepared'?'Проверка ещё не запущена':`Завершено ${done} из ${total} задач${snapshot.eta_provisional?' · план уточняется':''}`;
+      const eta=document.getElementById('review-eta');if(eta)eta.textContent=data.state==='prepared'?'':snapshot.eta_seconds?`${snapshot.eta_provisional?'Предварительно: ':'Осталось: '}${Math.ceil(snapshot.eta_seconds[0]/60)}–${Math.ceil(snapshot.eta_seconds[1]/60)} мин`:(['completed','partial','failed','cancelled'].includes(data.state)?'Обработка остановлена или завершена':'Прогноз появится после первых задач');
       const counts=document.getElementById('review-counts');if(counts)counts.textContent=`Подтверждено: ${findings.confirmed||0} · Кандидаты: ${(findings.candidate||0)+(findings.verifying||0)} · Вопросы: ${findings.question||0}`;
       for(const [id,value] of [['count-confirmed',findings.confirmed||0],['count-candidate',(findings.candidate||0)+(findings.verifying||0)],['count-question',findings.question||0],['count-failed',failed]]){const element=document.getElementById(id);if(element)element.textContent=value;}
       const current=document.getElementById('review-current');if(current){const running=(snapshot.running||[]).map(task=>`${stageLabels[task.stage]||task.stage}, ${Math.floor(task.seconds||0)} с`).join('; '),heartbeat=data.heartbeat?new Date(data.heartbeat).toLocaleTimeString('ru'):'нет данных';current.textContent=snapshot.fatal_error||(running?'Сейчас: '+running:`Последнее продвижение: ${heartbeat}`);}

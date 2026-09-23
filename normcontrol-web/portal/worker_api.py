@@ -114,7 +114,7 @@ def status(request,pk):
     batch=owned(request,pk)
     include_findings=request.GET.get('include_findings')=='1'
     try:run=WorkerRun.objects.get(batch=batch) if include_findings else WorkerRun.objects.defer('report').get(batch=batch)
-    except WorkerRun.DoesNotExist:return JsonResponse({'state':'waiting','snapshot':{},'report':{}})
+    except WorkerRun.DoesNotExist:return JsonResponse({'state':batch.status,'snapshot':{},'report_available':False,'heartbeat':None,'stale':False})
     snapshot=dict(run.snapshot or {})
     if include_findings and not snapshot.get('task_errors'):
         snapshot['task_errors']=[{'id':x.get('id','legacy-error'),'stage':x.get('stage','system'),'state':'failed','attempts':0,'error':x.get('error') or 'Причина не записана'} for x in run.report.get('tasks',[]) if x.get('state')=='failed'][:50]
@@ -137,7 +137,8 @@ def wake(request,pk):
 @login_required
 def register(request,pk):
     batch=owned(request,pk)
-    run=get_object_or_404(WorkerRun,batch=batch)
+    run=WorkerRun.objects.filter(batch=batch).first()
+    if not run:return JsonResponse({'records':[],'total':0,'page':1,'pages':1,'report_available':False,'types':[],'dispositions':{}})
     selected=request.GET.get('status','confirmed')
     if selected not in ('confirmed','candidate','question','style','rejected','task-error','all'):selected='confirmed'
     findings,_,_,doc_filter,category,type_filter,severity,_,_=filtered_findings(request,batch,run,selected)
