@@ -12,6 +12,7 @@ from django.views.decorators.http import require_POST
 from django.utils import timezone
 from django.core.paginator import Paginator
 from .models import Batch,Document,WorkerRun,ReviewFeedback,FindingDisposition,LLMConfig,WorkerPresence
+from .report_export import TYPE_LABELS, finding_type, task_errors, make_xlsx, make_docx
 
 def worker(view):
     @csrf_exempt
@@ -134,32 +135,80 @@ def wake(request,pk):
     return JsonResponse({'active':True,'signalled':True})
 
 @login_required
+def register(request,pk):
+    batch=owned(request,pk)
+    run=get_object_or_404(WorkerRun,batch=batch)
+    selected=request.GET.get('status','confirmed')
+    if selected not in ('confirmed','candidate','question','style','rejected','task-error','all'):selected='confirmed'
+    findings,_,_,doc_filter,category,type_filter,severity,_,_=filtered_findings(request,batch,run,selected)
+    query=request.GET.get('q','').strip()[:160]
+    errors=filtered_task_errors(run,selected,doc_filter,category,type_filter,severity,query)
+    if selected=='task-error':findings=[]
+    records=[{'kind':'finding','value':item} for item in findings]+[{'kind':'task-error','value':item} for item in errors]
+    pages=Paginator(records,50)
+    page=pages.get_page(request.GET.get('page'))
+    available_types={finding_type(f.get('category')) for f in (run.report or {}).get('findings',[])}
+    return JsonResponse({'records':list(page.object_list),'total':pages.count,'page':page.number,'pages':pages.num_pages,
+        'types':[{'value':key,'label':label} for key,label in TYPE_LABELS.items() if key in available_types],
+        'dispositions':{x.finding_id:{'state':x.state,'comment':x.comment,'author':x.author.get_full_name() or x.author.username,'updated':x.updated.isoformat()} for x in batch.finding_dispositions.select_related('author')}})
+
+
+def filtered_task_errors(run,selected,doc_filter,category,type_filter,severity,query):
+    if selected!='task-error' and (selected!='all' or any((doc_filter,category,type_filter,severity))):return []
+    errors=task_errors(run)
+    if query:
+        needle=query.casefold()
+        errors=[e for e in errors if needle in ' '.join((e['id'],e['stage'],e['error'])).casefold()]
+    return errors
+
+
+def filtered_findings(request,batch,run,selected):
+    if selected not in ('confirmed','candidate','question','style','rejected','task-error','all'):selected='confirmed'
+    decisions={x.finding_id:x for x in batch.finding_dispositions.select_related('author')}
+    all_findings=[{**f,'human_disposition':({'state':decisions[f.get('id')].state,'label':decisions[f.get('id')].get_state_display(),'comment':decisions[f.get('id')].comment,'author':decisions[f.get('id')].author.get_full_name() or decisions[f.get('id')].author.username,'updated':decisions[f.get('id')].updated} if f.get('id') in decisions else None)} for f in run.report.get('findings',[])]
+    documents=run.report.get('documents',[])
+    doc_filter=request.GET.get('document','')[:64];category=request.GET.get('category','')[:80]
+    type_filter=request.GET.get('type','')[:20]
+    if type_filter not in TYPE_LABELS:type_filter=''
+    severity=request.GET.get('severity','')[:20];query=request.GET.get('q','').strip()[:160]
+    categories=sorted({f.get('category','') for f in all_findings}-{''})
+    findings=[f for f in all_findings if selected=='all' or f.get('status')==selected or selected=='candidate' and f.get('status')=='verifying']
+    if selected=='task-error':findings=[]
+    if doc_filter:findings=[f for f in findings if any(e.get('document')==doc_filter for e in f.get('evidence',[]))]
+    if category:findings=[f for f in findings if f.get('category')==category]
+    if type_filter:findings=[f for f in findings if finding_type(f.get('category'))==type_filter]
+    if severity:findings=[f for f in findings if f.get('severity')==severity]
+    if query:
+        needle=query.casefold()
+        findings=[f for f in findings if needle in (' '.join(str(f.get(k,'')) for k in ('issue','explanation','suggestion'))+' '+' '.join(e.get('address','')+' '+e.get('quote','') for e in f.get('evidence',[]))).casefold()]
+    return findings,documents,categories,doc_filter,category,type_filter,severity,query,selected
+
+
+@login_required
 def report(request,pk):
     batch=owned(request,pk);run=get_object_or_404(WorkerRun,batch=batch)
     if request.GET.get('format')=='json':return JsonResponse(run.report,json_dumps_params={'ensure_ascii':False})
     if request.GET.get('format')=='md':
         r=HttpResponse(run.report.get('markdown_export','Отчёт ещё готовится'),content_type='text/markdown; charset=utf-8');r['Content-Disposition']='attachment; filename="normcontrol-report.md"';return r
-    selected=request.GET.get('status','confirmed')
-    if selected not in ('confirmed','candidate','question','style','rejected','all'):selected='confirmed'
-    decisions={x.finding_id:x for x in batch.finding_dispositions.select_related('author')}
-    all_findings=[{**f,'human_disposition':({'state':decisions[f.get('id')].state,'label':decisions[f.get('id')].get_state_display(),'comment':decisions[f.get('id')].comment,'author':decisions[f.get('id')].author.get_full_name() or decisions[f.get('id')].author.username,'updated':decisions[f.get('id')].updated} if f.get('id') in decisions else None)} for f in run.report.get('findings',[])]
-    documents=run.report.get('documents',[])
-    doc_filter=request.GET.get('document','')[:64];category=request.GET.get('category','')[:80]
-    severity=request.GET.get('severity','')[:20];query=request.GET.get('q','').strip()[:160]
-    categories=sorted({f.get('category','') for f in all_findings}-{''})
-    findings=[f for f in all_findings if selected=='all' or f['status']==selected or selected=='candidate' and f['status']=='verifying']
-    if doc_filter:findings=[f for f in findings if any(e.get('document')==doc_filter for e in f.get('evidence',[]))]
-    if category:findings=[f for f in findings if f.get('category')==category]
-    if severity:findings=[f for f in findings if f.get('severity')==severity]
-    if query:
-        needle=query.casefold()
-        findings=[f for f in findings if needle in (' '.join(str(f.get(k,'')) for k in ('issue','explanation','suggestion'))+' '+' '.join(e.get('address','')+' '+e.get('quote','') for e in f.get('evidence',[]))).casefold()]
+    findings,documents,categories,doc_filter,category,type_filter,severity,query,selected=filtered_findings(request,batch,run,request.GET.get('status','confirmed'))
+    errors=filtered_task_errors(run,selected,doc_filter,category,type_filter,severity,query)
+    if request.GET.get('format') in ('xlsx','docx'):
+        limitations=[x if isinstance(x,str) else x.get('reason') or x.get('error') or json.dumps(x,ensure_ascii=False) for x in run.report.get('limitations',[])]
+        filter_label=' · '.join(x for x in (f'Статус: {selected}',f'Тип: {TYPE_LABELS[type_filter]}' if type_filter else '',f'Категория: {category}' if category else '',f'Документ: {doc_filter}' if doc_filter else '',f'Важность: {severity}' if severity else '',f'Поиск: {query}' if query else '') if x)
+        kind=request.GET['format']
+        content=make_xlsx(batch,run,findings,errors,limitations,filter_label) if kind=='xlsx' else make_docx(batch,run,findings,errors,limitations,filter_label)
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if kind=='xlsx' else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        response=HttpResponse(content,content_type=mime)
+        response['Content-Disposition']=f'attachment; filename="normcontrol-register-{str(batch.pk)[:8]}.{kind}"'
+        return response
     page=Paginator(findings,50).get_page(request.GET.get('page'))
     params=request.GET.copy();params.pop('page',None);params.pop('format',None)
+    params['status']=selected
+    export_query=params.urlencode()
     limitations=[x if isinstance(x,str) else x.get('reason') or x.get('error') or json.dumps(x,ensure_ascii=False) for x in run.report.get('limitations',[])]
     return render(request,'review_report.html',{'batch':batch,'report':run.report,'findings':page,'report_limitations':limitations,'selected':selected,'page':'reports',
         'finding_page':page,'filter_query':params.urlencode(),'filter_documents':documents,'filter_categories':categories,
-        'filter_document':doc_filter,'filter_category':category,'filter_severity':severity,'filter_text':query})
+        'filter_document':doc_filter,'filter_category':category,'filter_type':type_filter,'filter_types':TYPE_LABELS,'filter_severity':severity,'filter_text':query,'export_query':export_query,'task_errors':errors})
 
 @login_required
 @require_POST

@@ -55,6 +55,8 @@ class PortalTests(TestCase):
         WorkerRun.objects.create(batch=batch,worker='desktop',state='running',snapshot={'task_errors':[{'id':'task-1','stage':'sto','state':'failed','attempts':2,'error':'Неверный JSON'}]})
         response=self.client.get('/normcontol/')
         self.assertContains(response,'data-register-filter="confirmed"');self.assertContains(response,'data-register-filter="task-error"')
+        self.assertContains(response,'id="finding-type"');self.assertContains(response,'id="register-page-label"')
+        self.assertContains(response,'data-export-format="xlsx"');self.assertContains(response,'data-export-format="docx"')
         self.assertContains(response,'Реестр замечаний и ошибок');self.assertContains(response,'href="/normcontol/rag/"')
         self.assertNotContains(response,'СТО РЖД 04.001.1–2021');self.assertNotContains(response,'catalog-1')
         rag_response=self.client.get('/normcontol/rag/')

@@ -11,20 +11,22 @@
 <p class="muted">«Проверено» означает, что проверка выполнена, а не что нарушений нет. Непроверенные требования не считаются выполненными.</p>
 </section>
 {% endif %}
-<div class="page-heading"><div><span class="eyebrow">НОРМОКОНТРОЛЬ · V5</span><h1>{{ report.status|default:'Отчёт ещё готовится' }}</h1><p>Каталог {{ report.catalog }} · конвейер {{ report.version }}</p></div><div><a class="button secondary" href="?format=json">JSON</a> <a class="button secondary" href="?format=md">Markdown</a></div></div>
+<div class="page-heading"><div><span class="eyebrow">НОРМОКОНТРОЛЬ · V5</span><h1>{{ report.status|default:'Отчёт ещё готовится' }}</h1><p>Каталог {{ report.catalog }} · конвейер {{ report.version }}</p></div><div class="heading-actions"><a class="button secondary" href="?{{ export_query }}&amp;format=xlsx">Excel ↓</a><a class="button secondary" href="?{{ export_query }}&amp;format=docx">Word ↓</a><a class="button subtle" href="?format=json">JSON</a><a class="button subtle" href="?format=md">Markdown</a></div></div>
 {% if report_limitations %}<div class="notice error"><span class="notice-symbol">!</span><div><strong>Проверка имеет ограничения: {{ report_limitations|length }}</strong><p>Итог нельзя считать подтверждением полного соответствия. <a href="#coverage-limitations">Посмотреть непроверенные области и причины →</a></p></div></div>{% else %}<div class="notice success">Все запланированные области обработаны. Выводы модели требуют решения специалиста.</div>{% endif %}
-<nav class="tabs"><a href="?status=confirmed">Подтверждённые</a><a href="?status=candidate">Кандидаты</a><a href="?status=question">Вопросы</a><a href="?status=style">Редакторские предложения</a><a href="?status=rejected">Отклонённые</a><a href="?status=all">Все</a></nav>
+<nav class="tabs"><a href="?status=confirmed">Подтверждённые</a><a href="?status=candidate">Кандидаты</a><a href="?status=question">Вопросы</a><a href="?status=task-error">Ошибки задач</a><a href="?status=style">Редакторские предложения</a><a href="?status=rejected">Отклонённые</a><a href="?status=all">Все</a></nav>
 <section class="panel form-panel">
   <form method="get" class="report-filters">
     <input type="hidden" name="status" value="{{ selected }}">
     <label>Документ<select name="document"><option value="">Все документы</option>{% for doc in filter_documents %}<option value="{{ doc.id }}" {% if filter_document == doc.id %}selected{% endif %}>{{ doc.name }}</option>{% endfor %}</select></label>
     <label>Категория<select name="category"><option value="">Все категории</option>{% for category in filter_categories %}<option {% if filter_category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
+    <label>Тип замечания<select name="type"><option value="">Все типы</option>{% for key,label in filter_types.items %}<option value="{{ key }}" {% if filter_type == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
     <label>Важность<select name="severity"><option value="">Любая</option><option value="critical" {% if filter_severity == 'critical' %}selected{% endif %}>Критическая</option><option value="major" {% if filter_severity == 'major' %}selected{% endif %}>Существенная</option><option value="medium" {% if filter_severity == 'medium' %}selected{% endif %}>Умеренная</option><option value="minor" {% if filter_severity == 'minor' %}selected{% endif %}>Незначительная</option></select></label>
     <label>Пункт или слова замечания<input name="q" maxlength="160" value="{{ filter_text }}" placeholder="Например, 4.1.2 или резервное копирование"></label>
     <button class="button secondary">Применить</button>
   </form>
   <p class="muted">Найдено: {{ finding_page.paginator.count }}. Страница {{ finding_page.number }} из {{ finding_page.paginator.num_pages }}; до 50 замечаний на странице.</p>
 </section>
+{% if selected == 'task-error' or selected == 'all' %}{% for error in task_errors %}<section class="panel form-panel"><span class="badge major">Ошибка задачи · {{ error.stage_label }}</span><h2>{{ error.id }}</h2><p>Попыток: {{ error.attempts }} · {{ error.error }}</p></section>{% empty %}{% if selected == 'task-error' %}<section class="panel form-panel"><p>Ошибок задач с выбранными фильтрами нет.</p></section>{% endif %}{% endfor %}{% endif %}
 {% for finding in findings %}
 <section class="panel form-panel">
   <span class="badge">{% if finding.status == 'confirmed' %}{% if finding.deterministic %}Подтверждено формальной проверкой{% else %}Подтверждено локальной моделью{% endif %}{% elif finding.status == 'question' %}Вопрос{% elif finding.status == 'rejected' %}Отклонено{% elif finding.status == 'style' %}Редакторское предложение{% else %}Кандидат{% endif %} · {{ finding.category }}</span>
@@ -37,7 +39,7 @@
   <p class="muted">{{ finding.verification }}</p>
   {% if finding.status != 'rejected' %}<details><summary>Оспорить или уточнить</summary><form class="review-feedback" data-url="{% url 'batch-feedback' batch.pk %}" data-finding="{{ finding.id }}">{% csrf_token %}<textarea name="comment" required minlength="8" maxlength="6000" class="feedback-text"></textarea><button class="button secondary">Отправить</button><span role="status"></span></form></details>{% endif %}
 </section>
-{% empty %}<section class="panel form-panel"><p>Замечаний с выбранными фильтрами пока нет.</p></section>{% endfor %}
+{% empty %}{% if selected != 'task-error' %}<section class="panel form-panel"><p>Замечаний с выбранными фильтрами пока нет.</p></section>{% endif %}{% endfor %}
 <nav class="report-pagination" aria-label="Страницы замечаний">
   {% if finding_page.has_previous %}<a class="button secondary" href="?{{ filter_query }}&amp;page={{ finding_page.previous_page_number }}">← Назад</a>{% endif %}
   <span>Страница {{ finding_page.number }} из {{ finding_page.paginator.num_pages }}</span>

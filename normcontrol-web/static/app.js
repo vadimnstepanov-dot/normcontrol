@@ -7,6 +7,10 @@ let liveFindings=[];
 let liveTaskErrors=[];
 let findingDispositions={};
 let selectedFinding='';
+const findingTypeLabels={sto:'СТО',grammar:'Грамотность',formatting:'Оформление',logic:'Техническая логика',cross:'Межраздельная логика',inter:'Междокументная логика',arithmetic:'Арифметика',other:'Прочее'};
+function findingType(category){const value=String(category||'').toLocaleLowerCase('ru');if(value.includes('сто')||['sto','нормативное нарушение'].includes(value))return 'sto';if(value.includes('грамот')||value.includes('граммат')||['language','grammar'].includes(value))return 'grammar';if(value.includes('оформлен'))return 'formatting';if(value.includes('междокумент'))return 'inter';if(value.includes('межраздел'))return 'cross';if(value.includes('арифмет')||value.includes('числов'))return 'arithmetic';if(value.includes('логик')||value==='logic')return 'logic';return 'other';}
+function updateFindingTypes(types){const select=document.getElementById('finding-type');if(!select)return;const current=select.value,available=new Set(types.map(item=>item.value));select.replaceChildren(new Option('Все типы',''));for(const item of types)select.add(new Option(item.label,item.value));select.value=available.has(current)?current:'';}
+function updateRegisterExports(){const panel=document.getElementById('findings-register');if(!panel?.dataset.exportUrl)return;const query=document.getElementById('finding-search')?.value.trim()||'',type=document.getElementById('finding-type')?.value||'';for(const link of panel.querySelectorAll('[data-export-format]')){const url=new URL(panel.dataset.exportUrl,window.location.href);url.searchParams.set('status',findingFilter);if(type&&findingFilter!=='task-error')url.searchParams.set('type',type);if(query)url.searchParams.set('q',query);url.searchParams.set('format',link.dataset.exportFormat);link.href=url.toString();}}
 
 function node(tag,className,text){const element=document.createElement(tag);if(className)element.className=className;if(text!==undefined)element.textContent=text;return element;}
 
@@ -50,6 +54,7 @@ function renderTaskErrorDetail(error){
 
 function drawFindingRegister(){
   const container=document.getElementById('live-findings');if(!container)return;const query=(document.getElementById('finding-search')?.value||'').trim().toLocaleLowerCase('ru');
+  const type=document.getElementById('finding-type')?.value||'';updateRegisterExports();
   if(findingFilter==='task-error'){
     const visible=liveTaskErrors.filter(item=>!query||[item.id,item.stage,stageLabels[item.stage],item.error].join(' ').toLocaleLowerCase('ru').includes(query));container.replaceChildren();
     if(!visible.some(item=>'error:'+item.id===selectedFinding))selectedFinding=visible[0]?'error:'+visible[0].id:'';
@@ -57,24 +62,51 @@ function drawFindingRegister(){
     const chosen=visible.find(item=>'error:'+item.id===selectedFinding);if(chosen)renderTaskErrorDetail(chosen);else document.getElementById('finding-detail')?.replaceChildren(node('div','empty-inline','Ошибок задач нет.'));
     const empty=document.getElementById('no-live-findings');if(empty){empty.hidden=visible.length!==0;empty.textContent='Ошибок задач нет.';}return;
   }
-  const visible=liveFindings.filter(f=>(f.status===findingFilter||(findingFilter==='candidate'&&f.status==='verifying'))&&(!query||findingText(f).includes(query)));container.replaceChildren();
+  const visible=liveFindings.filter(f=>(findingFilter==='all'||f.status===findingFilter||(findingFilter==='candidate'&&f.status==='verifying'))&&(!type||findingType(f.category)===type)&&(!query||findingText(f).includes(query)));container.replaceChildren();
   if(!visible.some(f=>f.id===selectedFinding))selectedFinding=visible[0]?.id||'';
   for(const finding of visible){const row=node('button','finding-row'+(finding.id===selectedFinding?' selected':' '));row.type='button';row.dataset.findingStatus=finding.status||'candidate';const top=node('span','finding-row-top');top.append(node('span','badge '+(finding.severity||''),finding.category||'Замечание'),node('span','disposition-state',({'new':'Не рассмотрено','in_work':'В работе','fixed':'Исправлено','disputed':'Не согласен'})[findingDispositions[finding.id]?.state||'new']));row.append(top,node('strong','',finding.issue||'Замечание'),node('small','',shortAddress(finding)));row.onclick=()=>{selectedFinding=finding.id;drawFindingRegister();};container.append(row);}
-  const chosen=visible.find(f=>f.id===selectedFinding);if(chosen)renderFindingDetail(chosen);else document.getElementById('finding-detail')?.replaceChildren(node('div','empty-inline','Выберите замечание слева.'));
-  const empty=document.getElementById('no-live-findings');if(empty){empty.hidden=visible.length!==0;empty.textContent='По выбранным условиям записей нет.';}
+  if(findingFilter==='all')for(const error of liveTaskErrors){const row=node('button','finding-row task-error-row'+('error:'+error.id===selectedFinding?' selected':''));row.type='button';row.append(node('span','finding-row-top'),node('strong','',stageLabels[error.stage]||error.stage||'Ошибка конвейера'),node('small','',error.error||'Причина не записана'));row.firstChild.append(node('span','badge major','Ошибка задачи'));row.onclick=()=>{selectedFinding='error:'+error.id;drawFindingRegister();};container.append(row);}
+  const chosen=visible.find(f=>f.id===selectedFinding),chosenError=liveTaskErrors.find(e=>'error:'+e.id===selectedFinding);
+  if(chosen)renderFindingDetail(chosen);else if(chosenError)renderTaskErrorDetail(chosenError);else document.getElementById('finding-detail')?.replaceChildren(node('div','empty-inline','Выберите замечание слева.'));
+  const empty=document.getElementById('no-live-findings');if(empty){empty.hidden=visible.length!==0||(findingFilter==='all'&&liveTaskErrors.length!==0);empty.textContent='По выбранным условиям записей нет.';}
+}
+
+const registerPanel=document.getElementById('findings-register');
+let registerPage=1,registerRequest=0,registerSignature='',registerLoadedAt=0;
+async function loadRegister(){
+  if(!registerPanel?.dataset.registerUrl)return;
+  const current=++registerRequest,url=new URL(registerPanel.dataset.registerUrl,window.location.href);
+  url.searchParams.set('status',findingFilter);url.searchParams.set('page',registerPage);
+  const type=document.getElementById('finding-type')?.value||'',query=document.getElementById('finding-search')?.value.trim()||'';
+  if(type&&findingFilter!=='task-error')url.searchParams.set('type',type);if(query)url.searchParams.set('q',query);
+  try{
+    const response=await fetch(url);if(!response.ok)throw new Error('Реестр пока недоступен');const data=await response.json();if(current!==registerRequest)return;
+    liveFindings=data.records.filter(item=>item.kind==='finding').map(item=>item.value);
+    liveTaskErrors=data.records.filter(item=>item.kind==='task-error').map(item=>item.value);
+    findingDispositions=data.dispositions||{};updateFindingTypes(data.types||[]);
+    registerPage=data.page;registerLoadedAt=Date.now();
+    const label=document.getElementById('register-page-label');if(label)label.textContent=`Найдено ${data.total} · страница ${data.page} из ${data.pages}`;
+    const previous=document.getElementById('register-previous'),next=document.getElementById('register-next');if(previous)previous.disabled=data.page<=1;if(next)next.disabled=data.page>=data.pages;
+    drawFindingRegister();
+  }catch(error){if(current===registerRequest){const label=document.getElementById('register-page-label');if(label)label.textContent='Реестр появится после начала проверки';}}
 }
 
 function applyFindingFilter(){
   drawFindingRegister();
 }
 function selectRegisterFilter(filter,scroll=false){
-  findingFilter=filter;selectedFinding='';document.querySelectorAll('[data-finding-filter]').forEach(item=>{const selected=item.dataset.findingFilter===filter;item.classList.toggle('selected',selected);item.setAttribute('aria-selected',selected?'true':'false');});applyFindingFilter();
+  findingFilter=filter;registerPage=1;selectedFinding='';const type=document.getElementById('finding-type');if(type){type.disabled=filter==='task-error';type.closest('label').hidden=filter==='task-error';}document.querySelectorAll('[data-finding-filter]').forEach(item=>{const selected=item.dataset.findingFilter===filter;item.classList.toggle('selected',selected);item.setAttribute('aria-selected',selected?'true':'false');});updateRegisterExports();loadRegister();
   if(scroll)document.getElementById('findings-register')?.scrollIntoView({behavior:'smooth',block:'start'});
 }
 document.querySelectorAll('[data-finding-filter]').forEach(button=>button.addEventListener('click',()=>selectRegisterFilter(button.dataset.findingFilter)));
 document.querySelectorAll('[data-register-filter]').forEach(button=>button.addEventListener('click',()=>selectRegisterFilter(button.dataset.registerFilter,true)));
 applyFindingFilter();
-document.getElementById('finding-search')?.addEventListener('input',drawFindingRegister);
+let registerSearchTimer;
+document.getElementById('finding-search')?.addEventListener('input',()=>{registerPage=1;updateRegisterExports();clearTimeout(registerSearchTimer);registerSearchTimer=setTimeout(loadRegister,250);});
+document.getElementById('finding-type')?.addEventListener('change',()=>{registerPage=1;updateRegisterExports();loadRegister();});
+document.getElementById('register-previous')?.addEventListener('click',()=>{if(registerPage>1){registerPage--;loadRegister();}});
+document.getElementById('register-next')?.addEventListener('click',()=>{registerPage++;loadRegister();});
+loadRegister();
 
 const reviewProgress=document.getElementById('review-progress');
 if(reviewProgress){
@@ -102,8 +134,7 @@ if(reviewProgress){
       const counts=document.getElementById('review-counts');if(counts)counts.textContent=`Подтверждено: ${findings.confirmed||0} · Кандидаты: ${(findings.candidate||0)+(findings.verifying||0)} · Вопросы: ${findings.question||0}`;
       for(const [id,value] of [['count-confirmed',findings.confirmed||0],['count-candidate',(findings.candidate||0)+(findings.verifying||0)],['count-question',findings.question||0],['count-failed',failed]]){const element=document.getElementById(id);if(element)element.textContent=value;}
       const current=document.getElementById('review-current');if(current){const running=(snapshot.running||[]).map(task=>`${stageLabels[task.stage]||task.stage}, ${Math.floor(task.seconds||0)} с`).join('; '),heartbeat=data.heartbeat?new Date(data.heartbeat).toLocaleTimeString('ru'):'нет данных';current.textContent=snapshot.fatal_error||(running?'Сейчас: '+running:`Последнее продвижение: ${heartbeat}`);}
-      liveTaskErrors=Array.isArray(snapshot.task_errors)?snapshot.task_errors:[];if(snapshot.fatal_error&&!liveTaskErrors.some(item=>item.error===snapshot.fatal_error))liveTaskErrors.unshift({id:'fatal',stage:'system',state:'failed',attempts:1,error:snapshot.fatal_error});
-      findingDispositions=data.dispositions||{};if(Array.isArray(data.findings_preview)){liveFindings=data.findings_preview;drawFindingRegister();}
+      const signature=JSON.stringify([data.state,findings,failed]);if(registerPanel&&(signature!==registerSignature||Date.now()-registerLoadedAt>30000)){registerSignature=signature;loadRegister();}
     }catch(error){const state=document.getElementById('review-state');if(state)state.textContent='Не удалось обновить состояние';}
   };
   refresh();setInterval(refresh,7000);setInterval(()=>wake(false).catch(()=>{}),60000);

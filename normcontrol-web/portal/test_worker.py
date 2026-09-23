@@ -1,4 +1,7 @@
 import os
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from django.test import TestCase
 from django.contrib.auth.models import User
@@ -71,13 +74,46 @@ class WorkerTests(TestCase):
             'explanation':'Проверка','suggestion':'Уточнить',
             'evidence':[{'document':'a' if i<50 else 'b','address':'пункт 4.2','quote':'Текст'}]} for i in range(51)]
         WorkerRun.objects.create(batch=self.batch,worker='desktop',report={'findings':findings,
-            'documents':[{'id':'a','name':'ТЗ.docx'},{'id':'b','name':'ОИТ.docx'}]})
+            'documents':[{'id':'a','name':'ТЗ.docx'},{'id':'b','name':'ОИТ.docx'}],
+            'tasks':[{'id':'failed-1','stage':'sto','state':'failed','error':'Тайм-аут модели'}]})
         self.client.force_login(self.user);url=f'/normcontol/batches/{self.batch.pk}/report/'
         first=self.client.get(url);self.assertContains(first,'Замечание-049');self.assertNotContains(first,'Замечание-050')
         second=self.client.get(url,{'page':2});self.assertContains(second,'Замечание-050');self.assertNotContains(second,'Замечание-049')
         filtered=self.client.get(url,{'document':'b','category':'техническая логика','severity':'major','q':'4.2'})
         self.assertContains(filtered,'Замечание-050');self.assertEqual(filtered.context['finding_page'].paginator.count,1)
         self.assertEqual(len(self.client.get(url,{'format':'json'}).json()['findings']),51)
+        register=f'/normcontol/batches/{self.batch.pk}/register/'
+        first_page=self.client.get(register,{'status':'all'}).json()
+        self.assertEqual(first_page['total'],52);self.assertEqual(len(first_page['records']),50)
+        self.assertEqual(len(self.client.get(register,{'status':'all','page':2}).json()['records']),2)
+        self.assertIn('grammar',[x['value'] for x in first_page['types']])
+        self.assertEqual(self.client.get(register,{'status':'all','type':'grammar'}).json()['total'],50)
+        self.assertEqual(self.client.get(register,{'status':'task-error'}).json()['records'][0]['value']['error'],'Тайм-аут модели')
+        excel=self.client.get(url,{'status':'all','format':'xlsx'})
+        word=self.client.get(url,{'status':'all','format':'docx'})
+        self.assertEqual(excel.status_code,200);self.assertEqual(word.status_code,200)
+        with zipfile.ZipFile(io.BytesIO(excel.content)) as workbook:
+            self.assertIsNone(workbook.testzip())
+            for name in workbook.namelist():
+                if name.endswith('.xml'):ET.fromstring(workbook.read(name))
+            sheet=workbook.read('xl/worksheets/sheet2.xml').decode()
+            self.assertIn('Замечание-050',sheet);self.assertIn('Замечание-000',sheet)
+            self.assertEqual(sheet.count('<row '),52)
+            self.assertIn('Тайм-аут модели',workbook.read('xl/worksheets/sheet3.xml').decode())
+        with zipfile.ZipFile(io.BytesIO(word.content)) as document:
+            self.assertIsNone(document.testzip())
+            for name in document.namelist():
+                if name.endswith('.xml'):ET.fromstring(document.read(name))
+            body=document.read('word/document.xml').decode()
+            self.assertIn('Замечание-050',body);self.assertIn('Замечание-000',body);self.assertIn('Тайм-аут модели',body)
+            self.assertIn('Обоснование: Проверка',body);self.assertIn('Цитата: Текст',body);self.assertIn('Предложение: Уточнить',body)
+        filtered_excel=self.client.get(url,{'status':'all','type':'grammar','format':'xlsx'})
+        with zipfile.ZipFile(io.BytesIO(filtered_excel.content)) as workbook:
+            sheet=workbook.read('xl/worksheets/sheet2.xml').decode()
+            self.assertIn('Замечание-049',sheet);self.assertNotIn('Замечание-050',sheet)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(url,{'status':'all','format':'xlsx'}).status_code,404)
+        self.assertEqual(self.client.get(register).status_code,404)
     def test_feedback_after_completion_and_pause_control(self):
         run=WorkerRun.objects.create(batch=self.batch,worker='desktop',state='partial',local_id='local-job')
         ReviewFeedback.objects.create(batch=self.batch,author=self.user,finding_id='f',comment='Проверьте исходную формулировку.')
