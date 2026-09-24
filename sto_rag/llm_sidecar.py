@@ -63,6 +63,18 @@ def ready():
     except (OSError,ValueError):return False
 
 
+def slot_activity():
+    """Read llama.cpp slot state once per telemetry interval, without generating tokens."""
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:'+MODEL_PORT+'/slots',timeout=2) as response:
+            slots=json.load(response)
+        if not isinstance(slots,list) or not slots:return None
+        states=[slot.get('is_processing') for slot in slots if isinstance(slot,dict)]
+        if not states or not all(isinstance(state,bool) for state in states):return None
+        return any(states)
+    except (OSError,ValueError,TypeError):return None
+
+
 def gpu():
     try:
         flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
@@ -214,6 +226,7 @@ def main(envfile):
     with sqlite3.connect(db,timeout=2) as connection:
         last_ended=connection.execute('SELECT coalesce(max(ended),0) FROM tasks').fetchone()[0]
     last_timing=None;last_pid=None;degradation=Degradation()
+    psutil.cpu_percent(interval=None)
     note='';pending_command=None
     while True:
         started=time.monotonic();process=backend()
@@ -225,9 +238,13 @@ def main(envfile):
             last_ended=timing['ended']
             if 'generation_tps' in timing:last_timing=timing
         used,total,utilization=gpu()
+        memory=psutil.virtual_memory()
         profile='vision' if process and '--mmproj' in process.cmdline() else 'text' if process else ''
         current_timing=last_timing if last_timing and time.time()-last_timing['ended']<300 else None
-        sample={'online':ready(),'uptime_seconds':round(max(0,time.time()-process.create_time())) if process else None,'vram_used_mb':used,'vram_total_mb':total,
+        sample={'online':ready(),'processing':slot_activity() if process else False,
+            'uptime_seconds':round(max(0,time.time()-process.create_time())) if process else None,
+            'cpu_percent':psutil.cpu_percent(interval=None),'ram_used_mb':round(memory.used/1048576),
+            'ram_total_mb':round(memory.total/1048576),'vram_used_mb':used,'vram_total_mb':total,
             'gpu_percent':utilization,'generation_tps':current_timing.get('generation_tps') if current_timing else None,
             'prefill_tps':current_timing.get('prefill_tps') if current_timing else None,
             'vision':profile=='vision','profile':profile,'note':note}

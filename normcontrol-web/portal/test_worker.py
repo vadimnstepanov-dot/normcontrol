@@ -25,7 +25,8 @@ class WorkerTests(TestCase):
         self.assertEqual(saved['requirements'],850);self.assertEqual(saved['sources'][0]['name'],'СТО РЖД 04.001.1–2021')
     def test_llm_telemetry_and_admin_control(self):
         telemetry='/normcontol/worker/llm/telemetry/'
-        sample={'online':True,'uptime_seconds':3723,'vram_used_mb':12000,'vram_total_mb':16000,'gpu_percent':73,
+        sample={'online':True,'processing':True,'uptime_seconds':3723,'cpu_percent':42,'ram_used_mb':24576,'ram_total_mb':65536,
+                'vram_used_mb':12000,'vram_total_mb':16000,'gpu_percent':73,
                 'generation_tps':63.2,'prefill_tps':980.5,'profile':'vision'}
         self.assertEqual(self.client.post(telemetry,{'sample':sample},content_type='application/json').status_code,403)
         for _ in range(125):
@@ -39,6 +40,9 @@ class WorkerTests(TestCase):
         self.assertEqual(len(LLMRuntime.objects.get(pk=1).history),120)
         self.assertNotIn('model_path',runtime.sample)
         self.assertEqual(runtime.sample['uptime_seconds'],3723)
+        self.assertIs(runtime.sample['processing'],True)
+        self.assertIs(LLMRuntime.objects.get(pk=1).history[-1]['processing'],True)
+        self.assertEqual(runtime.sample['ram_total_mb'],65536)
         self.client.force_login(self.user)
         self.assertEqual(self.client.get('/normcontol/llm/status/').json()['sample']['generation_tps'],63.2)
         self.assertEqual(self.client.post('/normcontol/llm/action/',{'action':'restart'},content_type='application/json').status_code,403)

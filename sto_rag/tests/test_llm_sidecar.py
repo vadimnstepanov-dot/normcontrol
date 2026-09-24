@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,14 @@ from nc5.store import Store
 
 
 class SidecarTests(unittest.TestCase):
+    def test_slot_activity_uses_actual_server_processing_state(self):
+        with patch.object(llm_sidecar.urllib.request,'urlopen',return_value=io.BytesIO(b'[{"is_processing":false},{"is_processing":true}]')):
+            self.assertIs(llm_sidecar.slot_activity(),True)
+        with patch.object(llm_sidecar.urllib.request,'urlopen',return_value=io.BytesIO(b'[{"is_processing":false}]')):
+            self.assertIs(llm_sidecar.slot_activity(),False)
+        with patch.object(llm_sidecar.urllib.request,'urlopen',return_value=io.BytesIO(b'[]')):
+            self.assertIsNone(llm_sidecar.slot_activity())
+
     def test_sampling_interval_and_manual_stop_start_keep_checkpoint(self):
         self.assertEqual(llm_sidecar.INTERVAL,60)
         with tempfile.TemporaryDirectory() as folder:

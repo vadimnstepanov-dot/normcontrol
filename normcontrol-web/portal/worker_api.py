@@ -62,8 +62,13 @@ def llm_telemetry(request):
     data=body(request)
     incoming=data.get('sample',{})
     if not isinstance(incoming,dict):raise ValueError('sample')
+    processing=incoming.get('processing')
     sample={'online':incoming.get('online') is True,
+        'processing':processing if isinstance(processing,bool) else None,
         'uptime_seconds':_metric(incoming.get('uptime_seconds'),315360000),
+        'cpu_percent':_metric(incoming.get('cpu_percent'),100),
+        'ram_used_mb':_metric(incoming.get('ram_used_mb'),1048576),
+        'ram_total_mb':_metric(incoming.get('ram_total_mb'),1048576),
         'vram_used_mb':_metric(incoming.get('vram_used_mb'),1048576),
         'vram_total_mb':_metric(incoming.get('vram_total_mb'),1048576),
         'gpu_percent':_metric(incoming.get('gpu_percent'),100),
@@ -84,7 +89,7 @@ def llm_telemetry(request):
         now=timezone.now()
         points=[item for item in (runtime.history or []) if isinstance(item,dict) and
             (stamp:=parse_datetime(item.get('at',''))) and stamp>=now-timedelta(hours=2)]
-        point={'at':now.isoformat(),**{k:sample[k] for k in ('online','uptime_seconds','vram_used_mb','gpu_percent','generation_tps','prefill_tps')}}
+        point={'at':now.isoformat(),**{k:sample[k] for k in ('online','processing','uptime_seconds','cpu_percent','ram_used_mb','vram_used_mb','gpu_percent','generation_tps','prefill_tps')}}
         if points and parse_datetime(points[-1]['at']).replace(second=0,microsecond=0)==now.replace(second=0,microsecond=0):
             points[-1]=point
         else:points.append(point)
