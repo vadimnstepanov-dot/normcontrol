@@ -1,12 +1,29 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import llm_sidecar
 from llm_sidecar import Degradation,THRESHOLD,wait_for_checkpoint,resume
 from nc5.store import Store
 
 
 class SidecarTests(unittest.TestCase):
+    def test_sampling_interval_and_manual_stop_start_keep_checkpoint(self):
+        self.assertEqual(llm_sidecar.INTERVAL,60)
+        with tempfile.TemporaryDirectory() as folder:
+            store=Store(Path(folder)/'review.sqlite3')
+            jid=store.create({'test':True})
+            with patch.object(llm_sidecar,'STATE',Path(folder)/'control.json'), \
+                 patch.object(llm_sidecar,'backend',return_value=True), \
+                 patch.object(llm_sidecar,'stop_backend'), \
+                 patch.object(llm_sidecar,'start_backend'):
+                paused=llm_sidecar.control('stop',store,[])
+                self.assertEqual(paused,[jid])
+                self.assertEqual(store.job(jid)['state'],'paused')
+                self.assertEqual(llm_sidecar.control('start',store,paused),[])
+                self.assertEqual(store.job(jid)['state'],'running')
+
     def test_degradation_requires_both_rates_and_sustained_comparable_work(self):
         detector=Degradation()
         now=10000

@@ -244,6 +244,7 @@ def main(envfile):
                     success=last_command['success'];note=last_command['message']
                 else:
                     success=False
+                    if automatic:degradation.last_restart=time.time()
                     try:
                         remembered=control(command['action'],store,remembered)
                         degradation.restarted(time.time())
