@@ -2,9 +2,11 @@ import os
 import io
 import zipfile
 import xml.etree.ElementTree as ET
+from datetime import timedelta
 from unittest.mock import patch
 from django.test import TestCase
 from django.contrib.auth.models import User
+from django.utils import timezone
 from .models import Batch,WorkerRun,ReviewFeedback,WorkerPresence,LLMRuntime
 
 class WorkerTests(TestCase):
@@ -30,7 +32,11 @@ class WorkerTests(TestCase):
             response=self.client.post(telemetry,{'sample':sample},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
         self.assertEqual(response.status_code,200)
         runtime=LLMRuntime.objects.get(pk=1)
-        self.assertEqual(len(runtime.history),120)
+        self.assertEqual(len(runtime.history),1)  # duplicate polls in one minute are coalesced
+        runtime.history=[{'at':(timezone.now()-timedelta(seconds=30*i)).isoformat()} for i in reversed(range(130))]
+        runtime.save(update_fields=['history'])
+        self.client.post(telemetry,{'sample':sample},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(len(LLMRuntime.objects.get(pk=1).history),120)
         self.assertNotIn('model_path',runtime.sample)
         self.client.force_login(self.user)
         self.assertEqual(self.client.get('/normcontol/llm/status/').json()['sample']['generation_tps'],63.2)

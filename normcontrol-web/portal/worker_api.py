@@ -4,6 +4,7 @@ import json
 import os
 import math
 import uuid
+from datetime import timedelta
 from functools import wraps
 from django.db import transaction
 from django.http import JsonResponse,FileResponse,HttpResponse
@@ -78,7 +79,15 @@ def llm_telemetry(request):
             command['message']=str(data.get('message',''))[:160]
             command['finished']=timezone.now().isoformat()
         runtime.sample=sample
-        runtime.history=(runtime.history or [])[-119:]+[{'at':timezone.now().isoformat(),**{k:sample[k] for k in ('online','vram_used_mb','gpu_percent','generation_tps','prefill_tps')}}]
+        from django.utils.dateparse import parse_datetime
+        now=timezone.now()
+        points=[item for item in (runtime.history or []) if isinstance(item,dict) and
+            (stamp:=parse_datetime(item.get('at',''))) and stamp>=now-timedelta(hours=2)]
+        point={'at':now.isoformat(),**{k:sample[k] for k in ('online','vram_used_mb','gpu_percent','generation_tps','prefill_tps')}}
+        if points and parse_datetime(points[-1]['at']).replace(second=0,microsecond=0)==now.replace(second=0,microsecond=0):
+            points[-1]=point
+        else:points.append(point)
+        runtime.history=points[-120:]
         runtime.command=command
         runtime.save(update_fields=['sample','history','command','updated'])
     pending=command if command.get('state')=='pending' else {}

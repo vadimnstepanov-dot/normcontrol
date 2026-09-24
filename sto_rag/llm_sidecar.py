@@ -272,4 +272,6 @@ def main(envfile):
             except (OSError,ValueError):pass
 
 
-if __name__=='__main__':main(sys.argv[1])
+if __name__=='__main__':
+    with Lease(DATA/'llm-sidecar.lock'):
+        main(sys.argv[1])
