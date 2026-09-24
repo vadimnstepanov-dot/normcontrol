@@ -227,7 +227,7 @@ def main(envfile):
         used,total,utilization=gpu()
         profile='vision' if process and '--mmproj' in process.cmdline() else 'text' if process else ''
         current_timing=last_timing if last_timing and time.time()-last_timing['ended']<300 else None
-        sample={'online':ready(),'vram_used_mb':used,'vram_total_mb':total,
+        sample={'online':ready(),'uptime_seconds':round(max(0,time.time()-process.create_time())) if process else None,'vram_used_mb':used,'vram_total_mb':total,
             'gpu_percent':utilization,'generation_tps':current_timing.get('generation_tps') if current_timing else None,
             'prefill_tps':current_timing.get('prefill_tps') if current_timing else None,
             'vision':profile=='vision','profile':profile,'note':note}

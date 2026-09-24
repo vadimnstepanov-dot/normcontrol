@@ -2,11 +2,15 @@
 
 const llmPanel=document.getElementById('llm-monitor');
 if(llmPanel){
-  const labels={online:'Доступность модели',vram_used_mb:'Память GPU, МиБ',gpu_percent:'Загрузка GPU, %',generation_tps:'Генерация, ток/с',prefill_tps:'Prefill, ток/с'};
-  const fields={online:'llm-online',vram_used_mb:'llm-vram',gpu_percent:'llm-gpu',generation_tps:'llm-generation',prefill_tps:'llm-prefill'};
-  let history=[],opened='',timer=null,busy=false;
+  const labels={online:'Доступность модели',vram_used_mb:'Память GPU, МиБ',gpu_percent:'Загрузка GPU, %',generation_tps:'Генерация, ток/с',prefill_tps:'Prefill, ток/с',uptime_seconds:'Время работы модели, с'};
+  const fields={online:'llm-online',vram_used_mb:'llm-vram',gpu_percent:'llm-gpu',generation_tps:'llm-generation',prefill_tps:'llm-prefill',uptime_seconds:'llm-uptime'};
+  let history=[],opened='',timer=null,busy=false,uptimeBase=null,uptimeAt=0;
   const setText=(id,value)=>{const element=document.getElementById(id);if(element)element.textContent=value;};
   const metric=value=>typeof value==='number'?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(value):'—';
+  const duration=value=>{if(typeof value!=='number')return '—';const seconds=Math.max(0,Math.floor(value)),days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.floor(seconds%3600/60);return days?`${days} д ${hours} ч`:`${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;};
+  function tickUptime(){const elapsed=uptimeBase===null?null:uptimeBase+(Date.now()-uptimeAt)/1000;setText(fields.uptime_seconds,duration(elapsed));setText('llm-uptime-detail',elapsed===null?'—':`${duration(elapsed)} (${Math.floor(elapsed/60)} мин)`);}
+  const gauge=(key,value,color)=>{const button=llmPanel.querySelector(`[data-llm-chart="${key}"]`);if(!button)return;button.style.setProperty('--gauge',String(Math.max(0,Math.min(100,value||0))));if(color)button.style.setProperty('--gauge-color',color);};
+  function closeChart(){opened='';draw();llmPanel.querySelectorAll('[data-llm-chart]').forEach(item=>item.setAttribute('aria-expanded','false'));}
   function draw(){
     const box=document.getElementById('llm-chart'),svg=document.getElementById('llm-chart-svg');box.hidden=!opened;
     if(!opened)return;
@@ -19,7 +23,7 @@ if(llmPanel){
     for(let y=25;y<=125;y+=50){const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1','0');line.setAttribute('x2','720');line.setAttribute('y1',String(y));line.setAttribute('y2',String(y));line.setAttribute('class','grid-line');svg.append(line);}
     let path='';values.forEach((value,index)=>{if(typeof value!=='number'||!Number.isFinite(value))return;const x=history.length===1?360:index*720/(history.length-1);const y=130-(value-minimum)/range*110;path+=(path?' L':'M')+x.toFixed(1)+','+y.toFixed(1);});
     const line=document.createElementNS('http://www.w3.org/2000/svg','path');line.setAttribute('d',path);line.setAttribute('class','data-line');svg.append(line);
-    setText('llm-chart-min',opened==='online'?'Выкл':metric(minimum));setText('llm-chart-max',opened==='online'?'Вкл':metric(maximum));
+    setText('llm-chart-min',opened==='online'?'Выкл':opened==='uptime_seconds'?duration(minimum):metric(minimum));setText('llm-chart-max',opened==='online'?'Вкл':opened==='uptime_seconds'?duration(maximum):metric(maximum));
   }
   async function refresh(){
     if(busy)return;busy=true;clearTimeout(timer);
@@ -27,12 +31,25 @@ if(llmPanel){
     try{
       const response=await fetch(llmPanel.dataset.statusUrl,{cache:'no-store'});if(!response.ok)throw Error('status');
       const data=await response.json(),sample=data.sample||{};history=data.history||[];
-      const on=data.telemetry_fresh&&sample.online;
-      setText(fields.online,data.telemetry_fresh?(on?'Включена':'Выключена'):'Нет связи');
+      const on=!!(data.telemetry_fresh&&sample.online);
+      setText(fields.online,data.telemetry_fresh?(on?'ON':'OFF'):'—');
       const statusCard=llmPanel.querySelector('[data-llm-chart=online]');statusCard.classList.toggle('is-online',!!on);statusCard.classList.toggle('is-offline',!on);
-      setText(fields.vram_used_mb,sample.vram_used_mb==null?'—':`${metric(sample.vram_used_mb)} / ${metric(sample.vram_total_mb)} МиБ`);
-      setText(fields.gpu_percent,sample.gpu_percent==null?'—':metric(sample.gpu_percent)+'%');
+      const vramPercent=sample.vram_total_mb?sample.vram_used_mb/sample.vram_total_mb*100:null;
+      setText(fields.vram_used_mb,vramPercent==null?'—':Math.round(vramPercent)+'%');
+      setText(fields.gpu_percent,sample.gpu_percent==null?'—':Math.round(sample.gpu_percent)+'%');
       setText(fields.generation_tps,metric(sample.generation_tps));setText(fields.prefill_tps,metric(sample.prefill_tps));
+      setText('llm-profile',!on?'Выключена':sample.vision?'Vision':sample.profile==='text'?'Текстовая':sample.profile||'Включена');
+      setText('llm-vram-detail',sample.vram_used_mb==null?'—':`${metric(sample.vram_used_mb)} / ${metric(sample.vram_total_mb)} МиБ`);
+      setText('llm-generation-detail',sample.generation_tps==null?'—':`${metric(sample.generation_tps)} ток/с`);
+      setText('llm-prefill-detail',sample.prefill_tps==null?'—':`${metric(sample.prefill_tps)} ток/с`);
+      uptimeBase=on&&typeof sample.uptime_seconds==='number'?sample.uptime_seconds:null;uptimeAt=Date.now();tickUptime();
+      gauge('online',on?100:0,on?'var(--green)':'var(--amber)');gauge('vram_used_mb',vramPercent,vramPercent>92?'var(--red)':vramPercent>80?'var(--amber)':'var(--violet)');
+      gauge('gpu_percent',sample.gpu_percent,sample.gpu_percent>90?'var(--amber)':'var(--accent)');
+      for(const [key,color] of [['generation_tps','var(--green)'],['prefill_tps','var(--accent)']]){
+        const peak=Math.max(0,...history.map(point=>Number(point[key])||0));gauge(key,peak?Number(sample[key]||0)/peak*100:0,color);
+        llmPanel.querySelector(`[data-llm-chart="${key}"]`).title=`${labels[key]}; дуга показывает долю от максимума за последние 120 минут`;
+      }
+      gauge('uptime_seconds',on?100:0,'var(--violet)');
       const latest=history.at(-1);setText('llm-sampled-at',latest&&data.telemetry_fresh?'Замер '+new Date(latest.at).toLocaleTimeString('ru'):'Нет свежего замера');
       const command=data.command||{};pending=command.state==='pending';
       const note=!data.telemetry_fresh?'Локальный монитор недоступен. Управление моделью появится после восстановления связи.':
@@ -44,13 +61,16 @@ if(llmPanel){
         const action=button.dataset.llmAction;button.disabled=!data.telemetry_fresh||pending||(action==='start'?on:!on);
       }
       draw();
-    }catch(error){setText('llm-monitor-note','Не удалось получить показатели LLM.');}
+    }catch(error){setText('llm-monitor-note','Не удалось получить показатели LLM.');uptimeBase=null;tickUptime();}
     finally{busy=false;timer=setTimeout(refresh,pending?5000:60000);}
   }
   llmPanel.querySelectorAll('[data-llm-chart]').forEach(button=>button.addEventListener('click',()=>{
     const selected=button.dataset.llmChart;opened=opened===selected?'':selected;
     llmPanel.querySelectorAll('[data-llm-chart]').forEach(item=>item.setAttribute('aria-expanded',String(item.dataset.llmChart===opened)));draw();
   }));
+  document.getElementById('llm-chart-close')?.addEventListener('click',closeChart);
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&opened)closeChart();});
+  document.addEventListener('pointerdown',event=>{if(opened&&!llmPanel.contains(event.target))closeChart();});
   llmPanel.querySelectorAll('[data-llm-action]').forEach(button=>button.addEventListener('click',async()=>{
     const action=button.dataset.llmAction;button.disabled=true;
     try{const response=await fetch(llmPanel.dataset.actionUrl,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({action})});
@@ -58,7 +78,7 @@ if(llmPanel){
       setText('llm-monitor-note','Команда передана. Текущая задача будет завершена и сохранена перед переключением модели.');
     }catch(error){setText('llm-monitor-note',error.message);}finally{refresh();}
   }));
-  refresh();
+  refresh();setInterval(tickUptime,1000);
 }
 
 const stateLabels={waiting:'Ожидает локального обработчика',preparing:'Чтение и планирование',running:'Проверяется',paused:'Приостановлена',partial:'Завершена с непроверенными областями',completed:'Проверка завершена',failed:'Ошибка выполнения',cancelled:'Отменена'};
