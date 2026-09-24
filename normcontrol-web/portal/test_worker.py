@@ -49,6 +49,8 @@ class WorkerTests(TestCase):
         self.assertEqual(self.client.post('/normcontol/llm/action/',{'action':'stop'},content_type='application/json').status_code,409)
         self.client.post(telemetry,{'sample':sample,'ack':command['id'],'success':True},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
         self.assertEqual(LLMRuntime.objects.get(pk=1).command['state'],'done')
+        runtime=LLMRuntime.objects.get(pk=1);runtime.history=[];runtime.save(update_fields=['history'])
+        self.assertEqual(self.client.post('/normcontol/llm/action/',{'action':'restart'},content_type='application/json').status_code,503)
     def test_claim_respects_admin_queue_order(self):
         priority=Batch.objects.create(owner=self.other,name='Приоритетный',status='waiting',queue_position=-1)
         result=self.client.post('/normcontol/worker/claim/',{'worker':'ordered'},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)

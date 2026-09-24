@@ -123,6 +123,11 @@ def llm_action(request):
     if action not in ('start','stop','restart'):return JsonResponse({'error':'Недопустимая команда'},status=400)
     with transaction.atomic():
         runtime,_=LLMRuntime.objects.select_for_update().get_or_create(pk=1)
+        from django.utils.dateparse import parse_datetime
+        latest=(runtime.history or [])[-1].get('at') if runtime.history else None
+        sampled=parse_datetime(latest) if latest else None
+        if not sampled or (timezone.now()-sampled).total_seconds()>90:
+            return JsonResponse({'error':'Локальный монитор недоступен; запустите его на компьютере с LLM'},status=503)
         if (runtime.command or {}).get('state')=='pending':return JsonResponse({'error':'Предыдущая команда ещё выполняется'},status=409)
         runtime.command={'id':uuid.uuid4().hex,'action':action,'state':'pending','created':timezone.now().isoformat()}
         runtime.save(update_fields=['command','updated'])

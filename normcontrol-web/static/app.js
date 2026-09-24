@@ -35,12 +35,13 @@ if(llmPanel){
       setText(fields.generation_tps,metric(sample.generation_tps));setText(fields.prefill_tps,metric(sample.prefill_tps));
       const latest=history.at(-1);setText('llm-sampled-at',latest&&data.telemetry_fresh?'Замер '+new Date(latest.at).toLocaleTimeString('ru'):'Нет свежего замера');
       const command=data.command||{};pending=command.state==='pending';
-      const note=pending?'Команда передана локальному компьютеру. Активная проверка будет сохранена в контрольной точке.':
+      const note=!data.telemetry_fresh?'Локальный монитор недоступен. Управление моделью появится после восстановления связи.':
+        pending?'Команда передана локальному компьютеру. Активная проверка будет сохранена в контрольной точке.':
         command.state==='failed'?'Не удалось выполнить команду: '+(command.message||'причина неизвестна'):
         sample.note||'Замеры раз в минуту. Скорости — по последнему рабочему запросу.';
       setText('llm-monitor-note',note);
       const controls=document.getElementById('llm-controls');if(controls)for(const button of controls.querySelectorAll('[data-llm-action]')){
-        const action=button.dataset.llmAction;button.disabled=pending||(action==='start'?on:!on);
+        const action=button.dataset.llmAction;button.disabled=!data.telemetry_fresh||pending||(action==='start'?on:!on);
       }
       draw();
     }catch(error){setText('llm-monitor-note','Не удалось получить показатели LLM.');}
