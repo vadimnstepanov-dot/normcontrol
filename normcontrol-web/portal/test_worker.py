@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from django.test import TestCase
 from django.contrib.auth.models import User
-from .models import Batch,WorkerRun,ReviewFeedback,WorkerPresence
+from .models import Batch,WorkerRun,ReviewFeedback,WorkerPresence,LLMRuntime
 
 class WorkerTests(TestCase):
     def setUp(self):
@@ -21,6 +21,28 @@ class WorkerTests(TestCase):
         response=self.client.post('/normcontol/worker/ping/',{'worker':'desktop','state':'idle','rag':rag},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
         self.assertEqual(response.status_code,200);saved=WorkerPresence.objects.get(name='desktop').details['rag']
         self.assertEqual(saved['requirements'],850);self.assertEqual(saved['sources'][0]['name'],'СТО РЖД 04.001.1–2021')
+    def test_llm_telemetry_and_admin_control(self):
+        telemetry='/normcontol/worker/llm/telemetry/'
+        sample={'online':True,'vram_used_mb':12000,'vram_total_mb':16000,'gpu_percent':73,
+                'generation_tps':63.2,'prefill_tps':980.5,'profile':'vision'}
+        self.assertEqual(self.client.post(telemetry,{'sample':sample},content_type='application/json').status_code,403)
+        for _ in range(125):
+            response=self.client.post(telemetry,{'sample':sample},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(response.status_code,200)
+        runtime=LLMRuntime.objects.get(pk=1)
+        self.assertEqual(len(runtime.history),120)
+        self.assertNotIn('model_path',runtime.sample)
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get('/normcontol/llm/status/').json()['sample']['generation_tps'],63.2)
+        self.assertEqual(self.client.post('/normcontol/llm/action/',{'action':'restart'},content_type='application/json').status_code,403)
+        self.user.is_staff=True;self.user.save(update_fields=['is_staff'])
+        response=self.client.post('/normcontol/llm/action/',{'action':'restart'},content_type='application/json')
+        self.assertEqual(response.status_code,200)
+        command=response.json()['command']
+        self.assertEqual(self.client.get('/normcontol/worker/llm/command/',HTTP_AUTHORIZATION='Bearer '+self.token).json()['command']['action'],'restart')
+        self.assertEqual(self.client.post('/normcontol/llm/action/',{'action':'stop'},content_type='application/json').status_code,409)
+        self.client.post(telemetry,{'sample':sample,'ack':command['id'],'success':True},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(LLMRuntime.objects.get(pk=1).command['state'],'done')
     def test_claim_respects_admin_queue_order(self):
         priority=Batch.objects.create(owner=self.other,name='Приоритетный',status='waiting',queue_position=-1)
         result=self.client.post('/normcontol/worker/claim/',{'worker':'ordered'},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)

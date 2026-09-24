@@ -2,6 +2,8 @@
 import hmac
 import json
 import os
+import math
+import uuid
 from functools import wraps
 from django.db import transaction
 from django.http import JsonResponse,FileResponse,HttpResponse
@@ -11,7 +13,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 from django.core.paginator import Paginator
-from .models import Batch,Document,WorkerRun,ReviewFeedback,FindingDisposition,LLMConfig,WorkerPresence
+from .models import Batch,Document,WorkerRun,ReviewFeedback,FindingDisposition,LLMConfig,WorkerPresence,LLMRuntime,Audit
 from .report_export import TYPE_LABELS, finding_type, task_errors, make_xlsx, make_docx
 from .access import visible_batch, editable_batch, can_edit
 
@@ -43,6 +45,80 @@ def ping(request):
          'unresolved_dependencies':int(raw.get('unresolved_dependencies',0) or 0),'settings':settings,'sources':sources} if raw else {}
     WorkerPresence.objects.update_or_create(name=str(data.get('worker','local'))[:100],defaults={'state':state,'details':{'rag':rag}})
     return JsonResponse({'ok':True})
+
+
+def _metric(value, ceiling):
+    try:
+        result=float(value)
+        return round(result,2) if math.isfinite(result) and 0<=result<=ceiling else None
+    except (TypeError,ValueError):return None
+
+
+@worker
+@require_POST
+def llm_telemetry(request):
+    """Desktop pushes bounded counters; no model polling or GPU work on the VPS."""
+    data=body(request)
+    incoming=data.get('sample',{})
+    if not isinstance(incoming,dict):raise ValueError('sample')
+    sample={'online':incoming.get('online') is True,
+        'vram_used_mb':_metric(incoming.get('vram_used_mb'),1048576),
+        'vram_total_mb':_metric(incoming.get('vram_total_mb'),1048576),
+        'gpu_percent':_metric(incoming.get('gpu_percent'),100),
+        'generation_tps':_metric(incoming.get('generation_tps'),100000),
+        'prefill_tps':_metric(incoming.get('prefill_tps'),100000),
+        'vision':incoming.get('vision') is True,
+        'profile':str(incoming.get('profile',''))[:32],
+        'note':str(incoming.get('note',''))[:160]}
+    with transaction.atomic():
+        runtime,_=LLMRuntime.objects.select_for_update().get_or_create(pk=1)
+        command=dict(runtime.command or {})
+        if data.get('ack') and str(data['ack'])==command.get('id'):
+            command['state']='done' if data.get('success') is True else 'failed'
+            command['message']=str(data.get('message',''))[:160]
+            command['finished']=timezone.now().isoformat()
+        runtime.sample=sample
+        runtime.history=(runtime.history or [])[-119:]+[{'at':timezone.now().isoformat(),**{k:sample[k] for k in ('online','vram_used_mb','gpu_percent','generation_tps','prefill_tps')}}]
+        runtime.command=command
+        runtime.save(update_fields=['sample','history','command','updated'])
+    pending=command if command.get('state')=='pending' else {}
+    return JsonResponse({'command':{'id':pending.get('id'),'action':pending.get('action')} if pending else None})
+
+
+@worker
+def llm_command(request):
+    runtime=LLMRuntime.objects.only('command').filter(pk=1).first()
+    command=runtime.command if runtime else {}
+    return JsonResponse({'command':{'id':command.get('id'),'action':command.get('action')}
+        if command.get('state')=='pending' else None})
+
+
+@login_required
+def llm_status(request):
+    runtime=LLMRuntime.objects.filter(pk=1).first()
+    from django.utils.dateparse import parse_datetime
+    latest=(runtime.history or [])[-1].get('at') if runtime and runtime.history else None
+    sampled=parse_datetime(latest) if latest else None
+    fresh=bool(sampled and (timezone.now()-sampled).total_seconds()<90)
+    sample=runtime.sample if fresh else {'online':False}
+    return JsonResponse({'sample':sample,'history':runtime.history if runtime else [],
+        'command':runtime.command if runtime else {},'telemetry_fresh':fresh,
+        'can_control':request.user.is_staff})
+
+
+@login_required
+@require_POST
+def llm_action(request):
+    if not request.user.is_staff:return JsonResponse({'error':'Требуются права администратора'},status=403)
+    action=body(request).get('action')
+    if action not in ('start','stop','restart'):return JsonResponse({'error':'Недопустимая команда'},status=400)
+    with transaction.atomic():
+        runtime,_=LLMRuntime.objects.select_for_update().get_or_create(pk=1)
+        if (runtime.command or {}).get('state')=='pending':return JsonResponse({'error':'Предыдущая команда ещё выполняется'},status=409)
+        runtime.command={'id':uuid.uuid4().hex,'action':action,'state':'pending','created':timezone.now().isoformat()}
+        runtime.save(update_fields=['command','updated'])
+        Audit.objects.create(user=request.user,action='Управление LLM: '+action)
+    return JsonResponse({'ok':True,'command':runtime.command})
 
 @worker
 def configuration(request):
@@ -114,7 +190,7 @@ def status(request,pk):
     batch=owned(request,pk)
     include_findings=request.GET.get('include_findings')=='1'
     try:run=WorkerRun.objects.get(batch=batch) if include_findings else WorkerRun.objects.defer('report').get(batch=batch)
-    except WorkerRun.DoesNotExist:return JsonResponse({'state':batch.status,'snapshot':{},'report_available':False,'heartbeat':None,'stale':False})
+    except WorkerRun.DoesNotExist:return JsonResponse({'state':batch.status,'snapshot':{},'report_available':False,'stale':False,'dispositions':{}})
     snapshot=dict(run.snapshot or {})
     if include_findings and not snapshot.get('task_errors'):
         snapshot['task_errors']=[{'id':x.get('id','legacy-error'),'stage':x.get('stage','system'),'state':'failed','attempts':0,'error':x.get('error') or 'Причина не записана'} for x in run.report.get('tasks',[]) if x.get('state')=='failed'][:50]
@@ -138,7 +214,7 @@ def wake(request,pk):
 def register(request,pk):
     batch=owned(request,pk)
     run=WorkerRun.objects.filter(batch=batch).first()
-    if not run:return JsonResponse({'records':[],'total':0,'page':1,'pages':1,'report_available':False,'types':[],'dispositions':{}})
+    if run is None:return JsonResponse({'records':[],'total':0,'page':1,'pages':1,'report_available':False,'types':[],'dispositions':{}})
     selected=request.GET.get('status','confirmed')
     if selected not in ('confirmed','candidate','question','style','rejected','task-error','all'):selected='confirmed'
     findings,_,_,doc_filter,category,type_filter,severity,_,_=filtered_findings(request,batch,run,selected)

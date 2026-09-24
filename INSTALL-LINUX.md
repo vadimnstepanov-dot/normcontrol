@@ -120,6 +120,8 @@ set -a; source /etc/normcontrol.env; set +a
 
 ## 7. Пример systemd
 
+Для мониторинга LLM на отдельной машине с GPU можно запустить `sto_rag/llm_sidecar.py` рядом с worker, задав `NORMCONTROL_LLAMA_EXE`, `NORMCONTROL_LLAMA_LAUNCHER` и при необходимости `NORMCONTROL_LLAMA_PORT`. Скрипт читает тот же приватный `worker.env`; на портале остаются только числовые показатели и короткая история из 120 минутных точек. Управление доступно администраторам и выполняется локально на машине с моделью. Для Windows приведена полная команда запуска в [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md).
+
 Замените `/opt/normcontrol` и пользователя `normcontrol` на фактические значения:
 
 ```ini

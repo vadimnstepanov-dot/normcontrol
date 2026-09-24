@@ -1,6 +1,66 @@
 'use strict';
 
-const stateLabels={prepared:'Готова к запуску',waiting:'Ожидает локального обработчика',preparing:'Чтение и планирование',running:'Проверяется',paused:'Приостановлена',partial:'Завершена с непроверенными областями',completed:'Проверка завершена',failed:'Ошибка выполнения',cancelled:'Отменена'};
+const llmPanel=document.getElementById('llm-monitor');
+if(llmPanel){
+  const labels={online:'Доступность модели',vram_used_mb:'Память GPU, МиБ',gpu_percent:'Загрузка GPU, %',generation_tps:'Генерация, ток/с',prefill_tps:'Prefill, ток/с'};
+  const fields={online:'llm-online',vram_used_mb:'llm-vram',gpu_percent:'llm-gpu',generation_tps:'llm-generation',prefill_tps:'llm-prefill'};
+  let history=[],opened='',timer=null,busy=false;
+  const setText=(id,value)=>{const element=document.getElementById(id);if(element)element.textContent=value;};
+  const metric=value=>typeof value==='number'?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(value):'—';
+  function draw(){
+    const box=document.getElementById('llm-chart'),svg=document.getElementById('llm-chart-svg');box.hidden=!opened;
+    if(!opened)return;
+    setText('llm-chart-title',labels[opened]);svg.replaceChildren();
+    const values=history.map(item=>opened==='online'?(item.online?1:0):item[opened]);
+    const finite=values.filter(value=>typeof value==='number'&&Number.isFinite(value));
+    if(!finite.length){setText('llm-chart-min','Нет замеров');setText('llm-chart-max','');return;}
+    const minimum=opened==='online'?0:Math.min(...finite),maximum=opened==='online'?1:Math.max(...finite);
+    const range=maximum-minimum||1;
+    for(let y=25;y<=125;y+=50){const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1','0');line.setAttribute('x2','720');line.setAttribute('y1',String(y));line.setAttribute('y2',String(y));line.setAttribute('class','grid-line');svg.append(line);}
+    let path='';values.forEach((value,index)=>{if(typeof value!=='number'||!Number.isFinite(value))return;const x=history.length===1?360:index*720/(history.length-1);const y=130-(value-minimum)/range*110;path+=(path?' L':'M')+x.toFixed(1)+','+y.toFixed(1);});
+    const line=document.createElementNS('http://www.w3.org/2000/svg','path');line.setAttribute('d',path);line.setAttribute('class','data-line');svg.append(line);
+    setText('llm-chart-min',opened==='online'?'Выкл':metric(minimum));setText('llm-chart-max',opened==='online'?'Вкл':metric(maximum));
+  }
+  async function refresh(){
+    if(busy)return;busy=true;clearTimeout(timer);
+    let pending=false;
+    try{
+      const response=await fetch(llmPanel.dataset.statusUrl,{cache:'no-store'});if(!response.ok)throw Error('status');
+      const data=await response.json(),sample=data.sample||{};history=data.history||[];
+      const on=data.telemetry_fresh&&sample.online;
+      setText(fields.online,data.telemetry_fresh?(on?'Включена':'Выключена'):'Нет связи');
+      const statusCard=llmPanel.querySelector('[data-llm-chart=online]');statusCard.classList.toggle('is-online',!!on);statusCard.classList.toggle('is-offline',!on);
+      setText(fields.vram_used_mb,sample.vram_used_mb==null?'—':`${metric(sample.vram_used_mb)} / ${metric(sample.vram_total_mb)} МиБ`);
+      setText(fields.gpu_percent,sample.gpu_percent==null?'—':metric(sample.gpu_percent)+'%');
+      setText(fields.generation_tps,metric(sample.generation_tps));setText(fields.prefill_tps,metric(sample.prefill_tps));
+      const latest=history.at(-1);setText('llm-sampled-at',latest&&data.telemetry_fresh?'Замер '+new Date(latest.at).toLocaleTimeString('ru'):'Нет свежего замера');
+      const command=data.command||{};pending=command.state==='pending';
+      const note=pending?'Команда передана локальному компьютеру. Активная проверка будет сохранена в контрольной точке.':
+        command.state==='failed'?'Не удалось выполнить команду: '+(command.message||'причина неизвестна'):
+        sample.note||'Замеры раз в минуту. Скорости — по последнему рабочему запросу.';
+      setText('llm-monitor-note',note);
+      const controls=document.getElementById('llm-controls');if(controls)for(const button of controls.querySelectorAll('[data-llm-action]')){
+        const action=button.dataset.llmAction;button.disabled=pending||(action==='start'?on:!on);
+      }
+      draw();
+    }catch(error){setText('llm-monitor-note','Не удалось получить показатели LLM.');}
+    finally{busy=false;timer=setTimeout(refresh,pending?5000:60000);}
+  }
+  llmPanel.querySelectorAll('[data-llm-chart]').forEach(button=>button.addEventListener('click',()=>{
+    const selected=button.dataset.llmChart;opened=opened===selected?'':selected;
+    llmPanel.querySelectorAll('[data-llm-chart]').forEach(item=>item.setAttribute('aria-expanded',String(item.dataset.llmChart===opened)));draw();
+  }));
+  llmPanel.querySelectorAll('[data-llm-action]').forEach(button=>button.addEventListener('click',async()=>{
+    const action=button.dataset.llmAction;button.disabled=true;
+    try{const response=await fetch(llmPanel.dataset.actionUrl,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({action})});
+      const value=await response.json();if(!response.ok)throw Error(value.error||'Команда не принята');
+      setText('llm-monitor-note','Команда передана. Текущая задача будет завершена и сохранена перед переключением модели.');
+    }catch(error){setText('llm-monitor-note',error.message);}finally{refresh();}
+  }));
+  refresh();
+}
+
+const stateLabels={waiting:'Ожидает локального обработчика',preparing:'Чтение и планирование',running:'Проверяется',paused:'Приостановлена',partial:'Завершена с непроверенными областями',completed:'Проверка завершена',failed:'Ошибка выполнения',cancelled:'Отменена'};
 const stageLabels={language:'Грамотность',logic:'Техническая логика',sto:'Требования СТО',cross:'Связи разделов',inter:'Связи документов',verify:'Перепроверка'};
 let findingFilter='confirmed';
 let liveFindings=[];
@@ -115,11 +175,6 @@ document.getElementById('register-next')?.addEventListener('click',()=>{register
 loadRegister();
 
 const historyToggle=document.getElementById('batch-history-toggle');
-document.getElementById('batch-history-rows')?.addEventListener('click',event=>{
-  if(event.target.closest('a,button,input,select,textarea'))return;
-  const link=event.target.closest('tr')?.querySelector('a.row-title');
-  if(link)window.location.assign(link.href);
-});
 if(historyToggle){
   const extraRows=[...document.querySelectorAll('#batch-history-rows tr[data-history-extra]')];
   const count=document.getElementById('batch-history-count');
@@ -154,8 +209,8 @@ if(reviewProgress){
       const currentPercent=document.getElementById('current-review-percent');if(currentPercent)currentPercent.textContent=rounded+'%';
       const currentState=document.getElementById('current-review-button-state');if(currentState)currentState.textContent=stateLabels[data.state]||data.state;
       const currentButton=document.getElementById('current-review-button');if(currentButton)currentButton.classList.toggle('is-active',['waiting','preparing','running'].includes(data.state));
-      const progressText=document.getElementById('review-progress-text');if(progressText)progressText.textContent=data.state==='prepared'?'Проверка ещё не запущена':`Завершено ${done} из ${total} задач${snapshot.eta_provisional?' · план уточняется':''}`;
-      const eta=document.getElementById('review-eta');if(eta)eta.textContent=data.state==='prepared'?'':snapshot.eta_seconds?`${snapshot.eta_provisional?'Предварительно: ':'Осталось: '}${Math.ceil(snapshot.eta_seconds[0]/60)}–${Math.ceil(snapshot.eta_seconds[1]/60)} мин`:(['completed','partial','failed','cancelled'].includes(data.state)?'Обработка остановлена или завершена':'Прогноз появится после первых задач');
+      const progressText=document.getElementById('review-progress-text');if(progressText)progressText.textContent=`Завершено ${done} из ${total} задач${snapshot.eta_provisional?' · план уточняется':''}`;
+      const eta=document.getElementById('review-eta');if(eta)eta.textContent=snapshot.eta_seconds?`${snapshot.eta_provisional?'Предварительно: ':'Осталось: '}${Math.ceil(snapshot.eta_seconds[0]/60)}–${Math.ceil(snapshot.eta_seconds[1]/60)} мин`:(['completed','partial','failed','cancelled'].includes(data.state)?'Обработка остановлена или завершена':'Прогноз появится после первых задач');
       const counts=document.getElementById('review-counts');if(counts)counts.textContent=`Подтверждено: ${findings.confirmed||0} · Кандидаты: ${(findings.candidate||0)+(findings.verifying||0)} · Вопросы: ${findings.question||0}`;
       for(const [id,value] of [['count-confirmed',findings.confirmed||0],['count-candidate',(findings.candidate||0)+(findings.verifying||0)],['count-question',findings.question||0],['count-failed',failed]]){const element=document.getElementById(id);if(element)element.textContent=value;}
       const current=document.getElementById('review-current');if(current){const running=(snapshot.running||[]).map(task=>`${stageLabels[task.stage]||task.stage}, ${Math.floor(task.seconds||0)} с`).join('; '),heartbeat=data.heartbeat?new Date(data.heartbeat).toLocaleTimeString('ru'):'нет данных';current.textContent=snapshot.fatal_error||(running?'Сейчас: '+running:`Последнее продвижение: ${heartbeat}`);}

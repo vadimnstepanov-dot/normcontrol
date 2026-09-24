@@ -102,3 +102,11 @@ class WorkerPresence(models.Model):
     state=models.CharField(max_length=16,default='idle')
     details=models.JSONField(default=dict)
     heartbeat=models.DateTimeField(auto_now=True)
+
+class LLMRuntime(models.Model):
+    """One small telemetry record; model files and commands stay on the desktop."""
+    id=models.PositiveSmallIntegerField(primary_key=True,default=1)
+    sample=models.JSONField(default=dict)
+    history=models.JSONField(default=list)
+    command=models.JSONField(default=dict)
+    updated=models.DateTimeField(auto_now=True)
