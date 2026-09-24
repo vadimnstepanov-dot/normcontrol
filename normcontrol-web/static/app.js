@@ -3,12 +3,12 @@
 const llmPanel=document.getElementById('llm-monitor');
 if(llmPanel){
   const labels={online:'Работа модели',vram_used_mb:'Память GPU, МиБ',gpu_percent:'Загрузка GPU, %',cpu_percent:'Загрузка CPU, %',ram_used_mb:'Оперативная память, МиБ',generation_tps:'Генерация, ток/с',prefill_tps:'Prefill, ток/с',uptime_seconds:'Время работы модели, с'};
-  const fields={online:'llm-online',vram_used_mb:'llm-vram',gpu_percent:'llm-gpu',cpu_percent:'llm-cpu',ram_used_mb:'llm-ram',generation_tps:'llm-generation',prefill_tps:'llm-prefill',uptime_seconds:'llm-uptime'};
+  const fields={online:'llm-online',vram_used_mb:'llm-vram',gpu_percent:'llm-gpu',cpu_percent:'llm-cpu',ram_used_mb:'llm-ram',generation_tps:'llm-generation',prefill_tps:'llm-prefill'};
   let history=[],opened='',timer=null,busy=false,uptimeBase=null,uptimeAt=0;
   const setText=(id,value)=>{const element=document.getElementById(id);if(element)element.textContent=value;};
   const metric=value=>typeof value==='number'?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(value):'—';
   const duration=value=>{if(typeof value!=='number')return '—';const seconds=Math.max(0,Math.floor(value)),days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.floor(seconds%3600/60);return days?`${days} д ${hours} ч`:`${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;};
-  function tickUptime(){const elapsed=uptimeBase===null?null:uptimeBase+(Date.now()-uptimeAt)/1000;setText(fields.uptime_seconds,duration(elapsed));setText('llm-uptime-detail',elapsed===null?'—':`${duration(elapsed)} (${Math.floor(elapsed/60)} мин)`);}
+  function tickUptime(){const elapsed=uptimeBase===null?null:uptimeBase+(Date.now()-uptimeAt)/1000;setText('llm-online-uptime',elapsed===null?'—':duration(elapsed));setText('llm-uptime-detail',elapsed===null?'—':`${duration(elapsed)} (${Math.floor(elapsed/60)} мин)`);const model=llmPanel.querySelector('[data-llm-chart="online"]');if(model)model.title=elapsed===null?'Модель выключена или статус недоступен':`Модель включена · работает ${duration(elapsed)}`;}
   const gauge=(key,value,color)=>{const button=llmPanel.querySelector(`[data-llm-chart="${key}"]`);if(!button)return;button.style.setProperty('--gauge',String(Math.max(0,Math.min(100,value||0))));if(color)button.style.setProperty('--gauge-color',color);};
   function closeChart(){opened='';draw();llmPanel.querySelectorAll('[data-llm-chart]').forEach(item=>item.setAttribute('aria-expanded','false'));}
   const svgNode=(svg,tag,attributes,value)=>{const element=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,item] of Object.entries(attributes))element.setAttribute(key,String(item));if(value!==undefined)element.textContent=value;svg.append(element);return element;};
@@ -93,7 +93,6 @@ if(llmPanel){
         const peak=Math.max(0,...history.map(point=>Number(point[key])||0));gauge(key,peak?Number(sample[key]||0)/peak*100:0,color);
         llmPanel.querySelector(`[data-llm-chart="${key}"]`).title=`${labels[key]}; дуга показывает долю от максимума за последние 120 минут`;
       }
-      gauge('uptime_seconds',on?100:0,'var(--violet)');
       const latest=history.at(-1);setText('llm-sampled-at',latest&&data.telemetry_fresh?'Замер '+new Date(latest.at).toLocaleTimeString('ru'):'Нет свежего замера');
       const command=data.command||{};pending=command.state==='pending';
       const note=!data.telemetry_fresh?'Локальный монитор недоступен. Управление моделью появится после восстановления связи.':
