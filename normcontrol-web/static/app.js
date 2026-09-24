@@ -40,6 +40,7 @@ if(llmPanel){
       setText(fields.generation_tps,metric(sample.generation_tps));setText(fields.prefill_tps,metric(sample.prefill_tps));
       setText('llm-profile',!on?'Выключена':sample.vision?'Vision':sample.profile==='text'?'Текстовая':sample.profile||'Включена');
       setText('llm-vram-detail',sample.vram_used_mb==null?'—':`${metric(sample.vram_used_mb)} / ${metric(sample.vram_total_mb)} МиБ`);
+      setText('llm-gpu-detail',sample.gpu_percent==null?'—':`${metric(sample.gpu_percent)}%`);
       setText('llm-generation-detail',sample.generation_tps==null?'—':`${metric(sample.generation_tps)} ток/с`);
       setText('llm-prefill-detail',sample.prefill_tps==null?'—':`${metric(sample.prefill_tps)} ток/с`);
       uptimeBase=on&&typeof sample.uptime_seconds==='number'?sample.uptime_seconds:null;uptimeAt=Date.now();tickUptime();
