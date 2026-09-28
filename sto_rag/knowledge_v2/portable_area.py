@@ -90,18 +90,110 @@ def remap(value,ids):
     return value
 
 
+def source_evidence(store, db, sid, source_id, source, command_id):
+    """Read-only source verification; no LLM, inferred table roles or old cards.
+
+    Imported context hashes are transport identities, not trusted local evidence.
+    DOCX locations/text are rebuilt from its checksummed OOXML. For other formats
+    require already parsed source-scoped fragments (never guessed OCR content).
+    """
+    from pathlib import Path
+    import hashlib
+    path=(store.directory/source['original_key']).resolve(strict=True)
+    if not path.is_relative_to((store.directory/'originals').resolve()):raise ValueError('Unsafe original source path')
+    if hashlib.sha256(path.read_bytes()).hexdigest()!=source['sha256']:raise ValueError('Original file digest differs')
+    if path.suffix.casefold()=='.docx':
+        import tempfile
+        from .structure_docx import read_docx
+        with tempfile.TemporaryDirectory(prefix='import-evidence-') as assets:
+            blocks=read_docx(path,Path(assets))['blocks']
+        found={b['locator']:dict(locator=b['locator'],text=b['exact_text'],
+            context_hash=checksum(['portable-source-evidence-v1',source['sha256'],b['locator'],b['exact_text']]),
+            structure={k:b[k] for k in ('heading_path','heading_addresses','table_label','row','column','source_locator','kind') if k in b}) for b in blocks}
+    else:
+        found={}
+        for row in db.execute("SELECT payload FROM records WHERE set_id=? AND kind IN ('fragment','structured_fragment') ORDER BY rowid",(sid,)):
+            b=json.loads(row[0])
+            if b.get('source_revision')!=[source_id,1]:continue
+            previous=found.get(b['locator'])
+            if previous and previous['text']!=b['exact_text']:raise ValueError('Ambiguous source fragment')
+            found[b['locator']]=dict(locator=b['locator'],text=b['exact_text'],context_hash=b['context_hash'],structure=b.get('structure',{}))
+    if not found:raise ValueError('Original has no readable source evidence')
+    return found
+
+
+def rebind_citations(value, contexts, source_hash):
+    """Verify offsets AND text before assigning a local context hash."""
+    if isinstance(value,dict):
+        if {'locator','quote','start','end','context_hash'}<=set(value):
+            f=contexts.get(value['locator']);a=value['start'];b=value['end']
+            if (not f or value.get('source_sha256',source_hash)!=source_hash or type(a) is not int or type(b) is not int
+                or not 0<=a<b<=len(f['text']) or f['text'][a:b]!=value['quote']):raise ValueError('Source citation mismatch')
+            value['context_hash']=f['context_hash'];value['source_sha256']=source_hash
+        else:
+            for child in value.values():rebind_citations(child,contexts,source_hash)
+    elif isinstance(value,list):
+        for child in value:rebind_citations(child,contexts,source_hash)
+
+
+def direct_card(store,db,sid,item,source,source_contexts):
+    from .expert import verify
+    from .applicability import validate_expression
+    card=copy.deepcopy(item['card']);rebind_citations(card,source_contexts,source['sha256'])
+    if card.get('applicability'):validate_expression(card['applicability'])
+    # Externally supplied expert/semantic completeness assertions cannot become
+    # local approval. Only lexical provenance is established by this operation.
+    for name in ('expert_approval','expert_resolution','publication_trust','refinement','merged_base_refs'):card.pop(name,None)
+    card['validation']=dict(provenance=dict(status='verified',errors=[]),
+        completeness=dict(semantic='needs_review',structural='source_quotes_verified',reasons=['independent_json_requires_expert_review']))
+    evidence={}
+    def collect(value):
+        if isinstance(value,dict):
+            if {'locator','quote','start','end','context_hash'}<=set(value):evidence[value['locator']]=source_contexts[value['locator']]
+            else:
+                for child in value.values():collect(child)
+        elif isinstance(value,list):
+            for child in value:collect(child)
+    collect(card)
+    refs=[]
+    for loc,f in evidence.items():
+        fid=str(uuid.uuid5(uuid.UUID(item['source_id']),'portable-evidence:'+f['context_hash']))
+        store.put_record(sid,'fragment',fid,1,dict(source_revision=[item['source_id'],1],locator=loc,
+            exact_text=f['text'],search_text=f['text'],context_hash=f['context_hash'],structure=f.get('structure',{})),_db=db)
+        refs.append([fid,1])
+    card['id']=item['id'];card['expert_approved']=False;card['expert_status']='unreviewed'
+    verify(card,list(evidence.values()),source['sha256'])
+    base_id=item['base_ids'][0]
+    store.put_record(sid,'term_definition' if card['entity_type']=='definition' else 'requirement',base_id,1,
+        dict(source_revision=[item['source_id'],1],fragment_refs=refs,card=card,modality=card.get('modality','unknown'),
+            condition=card.get('applicability',{'unknown':'Imported reference material'}),extractor_version='portable-source-evidence-v1',import_origin='independent_json'),_db=db)
+    return card,list(evidence.values())
+
+
 def apply(store,command_id,payload,authorize):
     sid=payload['set_id'];actor=payload['actor_id']
     if not authorize(actor,sid,'review'):raise PermissionError('Area import permission revoked')
     if not authorize(actor,sid,'upload'):raise PermissionError('Area import upload permission revoked')
     old=store.command_result(command_id,'area.import',payload)
     if old:return old
-    updates=[];extra_contexts={}
+    updates=[];extra_contexts={};source_context_cache={}
     from .expert import context,verify
     from .structure import atomic_json
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         for item in payload['cards']:
+            if item.get('evidence_mode')=='source_fragments':
+                row=db.execute("SELECT payload FROM records WHERE id=? AND version=1 AND set_id=? AND kind='source_revision'",(item['source_id'],sid)).fetchone()
+                if not row:raise ValueError('Original source unavailable')
+                source=json.loads(row[0])
+                if source['sha256']!=item['sha256']:raise ValueError('Original file digest differs')
+                if item['source_id'] not in source_context_cache:source_context_cache[item['source_id']]=source_evidence(store,db,sid,item['source_id'],source,command_id)
+                card,evidence=direct_card(store,db,sid,item,source,source_context_cache[item['source_id']])
+                card['ambiguities']=list(dict.fromkeys([*card.get('ambiguities',[]),'Импорт JSON: необходима экспертная сверка формулировки и применимости.']))
+                state=dict(card=card,base_ref=[item['base_ids'][0],1],extra_base_refs=[],source_revision=[item['source_id'],1],status='unreviewed',actor_id=actor,reason='Импорт JSON непосредственно из проверенного оригинала; требуется экспертная сверка.',action='create')
+                store.put_record(sid,'expert_card',item['id'],1,state,refs=[state['base_ref']],_db=db)
+                updates.append(dict(id=item['id'],source_id=item['source_id'],base_id=item['base_ids'][0],payload=card,contexts=evidence,status='unreviewed',revision=1))
+                continue
             evidence=[];bases=[]
             for base_id in item['base_ids']:
                 row=db.execute("SELECT payload FROM records WHERE id=? AND version=1 AND set_id=? AND kind IN ('requirement','term_definition')",(base_id,sid)).fetchone()

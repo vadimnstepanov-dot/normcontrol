@@ -42,6 +42,7 @@ def plan(area,document,identity):
     if missing:return dict(ready=False,missing_sources=[dict(filename=s['filename'],sha256=s['sha256']) for s in missing])
     if set(sources)!={s['sha256'] for s in document['sources']}:raise Conflict('В целевой области есть дополнительные оригиналы. Используйте новую область с точным составом источников JSON.')
     source_map={s['id']:sources[s['sha256']] for s in document['sources']}
+    if any(s.state not in ('prepared','partial') for s in source_map.values()):raise Conflict('Дождитесь завершения чтения оригиналов перед импортом JSON.')
     ids={old:str(s.pk) for old,s in source_map.items()}
     ids.update({p['id']:str(uuid.uuid5(identity,'profile:'+p['id'])) for p in document['profiles']})
     records=document['requirements']+document['glossary']['entries'];ids.update({c['id']:str(uuid.uuid5(identity,'card:'+c['id'])) for c in records})
@@ -49,12 +50,18 @@ def plan(area,document,identity):
     by_citation={}
     for c in candidates:
         for proof in c.payload.get('citations',[]):by_citation.setdefault((str(c.source_id),proof.get('locator'),proof.get('quote')),set()).add(str(c.base_id))
-    imports=[];keys={}
+    imports=[];keys={};direct=set()
     for c in records:
         source=source_map[c['source_id']]
         matches=[candidate for candidate in candidates if candidate.source_id==source.pk and any((p.get('locator'),p.get('quote'))==(q.get('locator'),q.get('quote')) for p in candidate.payload.get('citations',[]) for q in c['payload']['citations'])]
         mapped={m.profile_key for m in matches}
-        if len(mapped)!=1:raise ValueError('Нельзя однозначно сопоставить нормативный профиль по цитатам. Требуется сверка оригинала.')
+        if len(mapped)!=1:
+            # A clean area has no generated obligations. Do not require an LLM to
+            # regenerate a human-prepared set merely to establish its provenance.
+            # The canonical worker verifies the original and EVERY nested quote.
+            if any(candidate.source_id==source.pk for candidate in candidates) and c['payload'].get('preparation_origin')!='independent_source_analysis':
+                raise ValueError('Нельзя однозначно сопоставить нормативный профиль по цитатам. Требуется сверка оригинала.')
+            direct.add(c['id']);continue
         key=(c['source_id'],str(c['payload'].get('profile_id') or ''))
         if key in keys and keys[key]!=next(iter(mapped)):raise ValueError('Conflicting original profile mapping')
         keys[key]=next(iter(mapped))
@@ -66,19 +73,35 @@ def plan(area,document,identity):
             available={row['id']:row for a in Command.objects.filter(kind='source.analyze',state='done',normative_set=area,payload__source_id=str(source.pk)) for row in a.result.get('summary',{}).get('profiles',[])}
             if binding['profile_id'] in available:keys[key]=binding['profile_id'];continue
             matches=[row['id'] for row in available.values() if row['name']==p['definition']['name']]
-            if len(matches)!=1:raise ValueError('Не сопоставлен профиль без требований: '+p['definition']['name'])
+            if len(matches)!=1:
+                if any(c['id'] in direct for c in records if c['source_id']==binding['source_id']):
+                    keys[key]=ids[p['id']];continue
+                raise ValueError('Не сопоставлен профиль без требований: '+p['definition']['name'])
             keys[key]=matches[0]
     def profile_key(old_source,key):return keys.get((old_source,str(key or '')),str(key or ''))
     for c in records:
         source=source_map[c['source_id']];p=remap(copy.deepcopy(c['payload']),ids);bases=set()
         for citation in p['citations']:bases.update(by_citation.get((str(source.pk),citation.get('locator'),citation.get('quote')),set()))
-        if not bases:raise ValueError('Нормативное основание не найдено в обработанном оригинале: '+c['payload']['description'][:150])
-        p['profile_id']=profile_key(c['source_id'],c['payload'].get('profile_id',''));p['effective_profile_id']=p['profile_id']
-        imports.append(dict(id=ids[c['id']],source_id=str(source.pk),sha256=source.sha256,card=p,base_ids=sorted(bases)))
+        if c['id'] in direct:
+            if p['entity_type']=='definition':
+                # Glossary is an area-level entity, not a document profile.
+                p.pop('local_profile',None);key='area-glossary';p['profile_ids']=[]
+            else:
+                key=p.get('local_profile') or p.get('profile_id')
+                if key not in {ids[x['id']] for x in document['profiles']}:raise ValueError('Импортируемое требование должно принадлежать профилю JSON.')
+                p['profile_ids']=[key]
+            p['profile_id']=key;p['effective_profile_id']=key
+            bases={str(uuid.uuid5(identity,'source-evidence:'+c['id']))}
+        elif not bases:raise ValueError('Нормативное основание не найдено в обработанном оригинале: '+c['payload']['description'][:150])
+        else:
+            p['profile_id']=profile_key(c['source_id'],c['payload'].get('profile_id',''));p['effective_profile_id']=p['profile_id']
+        imports.append(dict(id=ids[c['id']],source_id=str(source.pk),sha256=source.sha256,card=p,base_ids=sorted(bases),**({'evidence_mode':'source_fragments'} if c['id'] in direct else {})))
     imported_profiles=[]
     for p in document['profiles']:
         d=remap(copy.deepcopy(p['definition']),ids)
         d['bindings']=[dict(source_id=ids[b['source_id']],profile_id=profile_key(b['source_id'],b['profile_id'])) for b in p['definition']['bindings']]
+        if direct and not d['bindings']:
+            d['bindings']=[dict(source_id=ids[s['id']],profile_id=ids[p['id']]) for s in document['sources']]
         imported_profiles.append(dict(id=ids[p['id']],definition=d))
     return dict(ready=True,controls=remap(document.get('controls',[]),ids),profiles=imported_profiles,cards=imports,choices=remap(document['glossary']['choices'],ids),links=remap(document['interdocument_requirements'],ids),area=document['area'],source_metadata=[dict(id=ids[s['id']],fields=s.get('metadata',{}),revision=source_map[s['id']].identification_revision) for s in document['sources']],
         replace_cards=[dict(id=str(c.pk),revision=c.revision) for c in candidates],replace_profiles=[dict(id=str(p.pk),revision=p.revision) for p in profiles],
@@ -102,7 +125,7 @@ def load(request,identity):
         try:prepared=plan(area,d['document'],cid)
         except (ValueError,Conflict) as e:return JsonResponse(dict(error=str(e)),status=409 if isinstance(e,Conflict) else 400)
         if not prepared['ready']:return JsonResponse(prepared,status=409)
-        if not d['apply']:return JsonResponse(dict(ready=True,stats=prepared['stats'],revision=area.metadata_revision,warnings=['Экспертные отметки сбрасываются; импортированные записи требуют сверки с первоисточниками.','Автоматически извлечённые профили и кандидаты будут заменены. История и запущенные проверки сохранятся.']))
+        if not d['apply']:return JsonResponse(dict(ready=True,stats=prepared['stats'],revision=area.metadata_revision,warnings=['Экспертные отметки сбрасываются; импортированные записи требуют сверки с первоисточниками.','Все цитаты проверит локальный обработчик по оригиналам перед применением; предварительный просмотр не подтверждает их происхождение.','Автоматически извлечённые профили и кандидаты будут заменены. История и запущенные проверки сохранятся.']))
         if d.get('expected_revision')!=area.metadata_revision:raise Conflict('Area changed before import')
         payload=dict(set_id=str(area.pk),actor_id=request.user.pk,**prepared,area_revision=area.metadata_revision)
         c=command(request.user,area,'area.import',digest(['area-import',str(cid)]),payload)
@@ -120,6 +143,18 @@ def receive(worker_id,command_id,lease,sequence,entries,entry_hash):
     chunk,new=AnalysisChunk.objects.get_or_create(command=c,sequence=sequence,defaults=dict(entries=entries,digest=entry_hash))
     if not new and chunk.digest!=entry_hash:raise Conflict('Import replay changed')
     return dict(accepted=True)
+
+
+@transaction.atomic
+def fail(worker_id,command_id,lease,reason,permanent):
+    if reason not in ('area_import_validation_failed','area_import_delivery_failed') or type(permanent) is not bool:raise ValueError('Import failure code')
+    c=Command.objects.select_for_update().select_related('actor','normative_set__scope').get(pk=command_id,kind='area.import')
+    if c.worker_id!=worker_id or str(c.lease)!=str(lease) or c.state!='delivering' or c.lease_until<=timezone.now():raise Conflict('Import lease')
+    require(c.actor,c.normative_set.scope,'review');require(c.actor,c.normative_set.scope,'upload')
+    c.state='failed' if permanent or c.attempts>=c.max_attempts else 'pending'
+    c.result=dict(reason=reason,attempts=c.attempts);c.lease=None;c.lease_until=None
+    c.save(update_fields=['state','result','lease','lease_until'])
+    return dict(accepted=True,state=c.state)
 
 
 @boundary({'POST'},worker=True)
@@ -147,11 +182,12 @@ def accept(c,result):
         if row.revision!=ref['revision'] or row.pending_id:raise Conflict('Card changed during import')
     DocumentProfile.objects.filter(pk__in=[p['id'] for p in c.payload['replace_profiles']]).update(archived=True)
     from .profiles import save_profile
+    verified_bindings={(b['source_id'],b['profile_id']) for p in c.payload['profiles'] for b in p['definition']['bindings'] if any(i.get('evidence_mode')=='source_fragments' and i['source_id']==b['source_id'] for i in c.payload['cards'])}
     waiting=list(c.payload['profiles']);done=set()
     while waiting:
         ready=[p for p in waiting if set(p['definition']['parents'])<=done]
         if not ready:raise ValueError('Imported profile graph')
-        for p in ready:save_profile(c.actor,area.scope_id,p['definition'],p['id'],dataset=area,create_identity=True);done.add(p['id']);waiting.remove(p)
+        for p in ready:save_profile(c.actor,area.scope_id,p['definition'],p['id'],dataset=area,create_identity=True,verified_bindings=verified_bindings);done.add(p['id']);waiting.remove(p)
     originals={str(x.pk):x for x in area.sources.all()}
     from knowledge_v2.source_identity import FIELDS,VERSION as IDENTITY_VERSION
     for m in c.payload.get('source_metadata',[]):
@@ -170,10 +206,11 @@ def accept(c,result):
         i=expected[e['id']]
         if e['source_id']!=i['source_id'] or e['base_id'] not in i['base_ids'] or e['status']!='unreviewed' or e['revision']!=1:raise Conflict('Imported card differs')
         source=originals[e['source_id']];base=ExpertCard.objects.filter(source=source,base_id=e['base_id']).first()
-        if not base:raise Conflict('Import original projection missing')
+        direct=i.get('evidence_mode')=='source_fragments'
+        if not base and not direct:raise Conflict('Import original projection missing')
         p=e['payload']
         if p.get('expert_approved') is not False or p.get('expert_status')!='unreviewed' or p.get('expert_approval') or p.get('validation',{}).get('provenance',{}).get('status')!='verified':raise Conflict('Imported trust was not reset')
-        row=ExpertCard.objects.create(pk=e['id'],source=source,analysis=base.analysis,base_id=e['base_id'],payload=p,description=p['description'],entity_type=p['entity_type'],profile_key=p.get('profile_id',''),section=p.get('locator',''),status='unreviewed')
+        row=ExpertCard.objects.create(pk=e['id'],source=source,analysis=c if direct else base.analysis,base_id=e['base_id'],payload=p,contexts=e.get('contexts',[]) if direct else [],description=p['description'],entity_type=p['entity_type'],profile_key=p.get('profile_id',''),section=p.get('locator',''),status='unreviewed')
         ExpertCardRevision.objects.create(card=row,revision=1,payload=p,digest=digest(p),action='create',reason='Импорт JSON с проверенным первоисточником; требуется экспертная сверка.',actor=c.actor)
     ExpertCard.objects.filter(pk__in=[r['id'] for r in c.payload['replace_cards']]).update(status='superseded')
     from .glossary import sync
@@ -192,6 +229,8 @@ def accept(c,result):
         identity=str(area.pk) if control['kind']=='area' else link_ids.get(control['id'],control['id'])
         ObjectControl.objects.update_or_create(kind=control['kind'],object_id=identity,defaults=dict(normative_set=area,enabled=control['enabled'],deleted=control['deleted']))
     sync(area)
-    area.description=c.payload['area']['description'];area.automatic=c.payload['area']['automatic'];area.metadata_revision+=1;area.save()
+    area.description=c.payload['area']['description'];area.automatic=c.payload['area']['automatic'];area.metadata_revision+=1
+    if not area.active_release_id:area.state='prepared'
+    area.save()
     audit(c.actor,'area.imported',area.pk,dict(command=str(c.pk),count=len(entries),expert_trust_transferred=False))
     return dict(accepted=True,stats=c.payload['stats'])

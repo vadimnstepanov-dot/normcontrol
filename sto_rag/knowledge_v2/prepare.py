@@ -19,12 +19,16 @@ def prepare(store, command_id, payload, encoder, vector, authorize):
     from .semantic import VERSION as SEMANTIC_VERSION
     from .quality import MODE,VERSION as QUALITY_VERSION
     screened=payload.get('mode')==MODE
-    if payload.get('mode','complete') not in ('complete',MODE):raise ValueError('Unknown release mode')
+    imported=payload.get('mode')=='imported_reference'
+    if payload.get('mode','complete') not in ('complete',MODE,'imported_reference'):raise ValueError('Unknown release mode')
+    if imported and (not payload.get('curation') or set(payload.get('imports',{}))!=set(sources) or checksum(payload['imports'])!=payload['versions'].get('import_selection_digest')):
+        raise Conflict('Import selection differs')
     if screened and (not payload.get('curation') or payload['versions'].get('quality')!=QUALITY_VERSION or checksum(payload.get('analyses'))!=payload['versions'].get('analysis_selection_digest')):
         raise Conflict('Screening selection differs')
-    basic={k:v for k,v in payload['versions'].items() if k not in ('curation','curation_digest','quality','analysis_selection_digest')}
+    basic={k:v for k,v in payload['versions'].items() if k not in ('curation','curation_digest','quality','analysis_selection_digest','import_selection_digest')}
     if basic not in ({'parser':PARSER_VERSION,'extractor':EXTRACTOR_VERSION},
-                                   {'parser':PARSER_VERSION,'extractor':SEMANTIC_VERSION}):
+                                   {'parser':PARSER_VERSION,'extractor':SEMANTIC_VERSION},
+                                   *([{'parser':PARSER_VERSION,'extractor':'portable-source-evidence-v1'}] if imported else [])):
         raise Conflict('Preparation versions changed')
     with store.connection() as db:
         rows=list(db.execute('SELECT id,version,kind,payload FROM records WHERE set_id=? ORDER BY id,version',(sid,)))
@@ -36,6 +40,20 @@ def prepare(store, command_id, payload, encoder, vector, authorize):
         if not versions or versions[-1][1]!='source_revision':raise NotReady('Source not ingested')
         if versions[-1][2]['parser_version']!=PARSER_VERSION:raise Conflict('Source parser version differs')
         refs.add((source_id,versions[-1][0]))
+        if imported:
+            pin=payload['imports'][source_id]
+            with store.connection() as db:
+                r=db.execute('SELECT result FROM inbox WHERE id=?',(pin['command_id'],)).fetchone()
+            result=json.loads(r[0]) if r else {}
+            if result.get('kind')!='area.import.done' or result.get('set_id')!=sid or result.get('digest')!=pin['material_digest']:
+                raise Conflict('Pinned import result differs')
+            # Freeze only the successful import's source lineage; no fictitious
+            # extraction marker or statement of full source coverage is created.
+            material=json.loads((store.directory/'area-imports'/(str(uuid.UUID(pin['command_id']))+'.json')).read_text(encoding='utf8'))
+            if checksum(material)!=result.get('digest'):raise Conflict('Pinned import material differs')
+            semantic_runs[source_id]='independent_import'
+            semantic_cards.update(c['base_id'] for c in material if c['source_id']==source_id)
+            continue
         # A complete extractor run is required, including its uncertainty ledger.
         folder=store.directory/'analyses'
         marker=folder/(source_id+'.complete')
@@ -126,7 +144,7 @@ def prepare(store, command_id, payload, encoder, vector, authorize):
                 'confirmed':sum(c['trust']['approval_current'] and not c['trust']['blocking_reasons'] for c in policy['catalog']),
                 'blocked':sum(bool(c['trust']['blocking_reasons']) for c in policy['catalog']),
                 'requires_reconfirmation':sum(c['trust']['requires_reconfirmation'] for c in policy['catalog'])})
-        if screened:
+        if screened or imported:
             result['quality_summary']=policy['quality']
             result['trust_summary'].update(quality=policy['quality']['counts'])
     return store.remember_result(command_id,'release.prepare',payload,result)

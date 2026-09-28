@@ -93,7 +93,7 @@ def _record_text(kind, payload):
         citations = card.get('citations', [])
         primary = next((c.get('quote','') for c in citations if c.get('locator')==card.get('locator')), '')
         return (primary.strip() or
-                ' '.join(str(x) for x in card.get('obligations', []))), card.get('locator',''), card.get('effective_profile_id','')
+                ' '.join(str(x) for x in card.get('obligations', []))), card.get('locator',''), card.get('effective_profile_id') or ''
     if kind == 'obligation':
         return ' '.join(str(payload.get(k,'')) for k in ('subject','action','object')), payload.get('citation',{}).get('locator',''), ''
     return ' '.join(str(payload.get(k,'')) for k in ('conditions','counterexample','summary')), payload.get('locator',''), ''
@@ -138,7 +138,7 @@ def _entries(store, manifest, encoder):
                 if parent not in refs:raise Conflict('Obligation parent outside release')
                 parent_row=db.execute('SELECT payload FROM records WHERE id=? AND version=?',parent).fetchone()
                 parent_card=json.loads(parent_row[0]).get('card',{})
-                profile_id=parent_card.get('effective_profile_id','')
+                profile_id=parent_card.get('effective_profile_id') or ''
                 profile_ids=parent_card.get('profile_ids') or [profile_id]
                 applicability=parent_card.get('validation',{}).get('applicability',{}).get('result','unknown')
             else:

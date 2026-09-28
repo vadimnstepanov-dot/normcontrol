@@ -138,8 +138,14 @@ def prepare_selected_sources(user,set_id,source_ids,expected_revision,key,mode='
     sources=list(SourceUpload.objects.filter(normative_set=dataset,pk__in=source_ids))
     if len(sources)!=len(source_ids) or any(x.state not in ('prepared','partial') for x in sources):
         raise NotReady('Sources are not ready')
-    extractor_versions=set();analyses={}
+    extractor_versions=set();analyses={};imports={}
     for source in sources:
+        imported=Command.objects.filter(normative_set=dataset,kind='area.import',state='done').order_by('-created').first()
+        direct=[c for c in imported.payload.get('cards',[]) if c['source_id']==str(source.pk)] if imported else []
+        if direct and all(c.get('evidence_mode')=='source_fragments' for c in direct):
+            entries=[row for chunk in imported.analysis_chunks.order_by('sequence') for row in chunk.entries]
+            imports[str(source.pk)]=dict(command_id=str(imported.pk),material_digest=digest(entries))
+            extractor_versions.add('portable-source-evidence-v1');continue
         last=Command.objects.filter(normative_set=dataset,kind='source.analyze',payload__source_id=str(source.pk)).order_by('-created').first()
         if not last or last.state!='done':
             raise NotReady('Requirements extraction is incomplete')
@@ -151,6 +157,8 @@ def prepare_selected_sources(user,set_id,source_ids,expected_revision,key,mode='
             analyses[str(source.pk)]=dict(run_id=summary['run_id'],summary_digest=digest(summary))
         extractor_versions.add(last.payload['extractor_version'])
     if len(extractor_versions)!=1:raise NotReady('Analyze selected sources with the same extractor version')
+    if imports and (mode!= 'complete' or len(imports)!=len(sources)):
+        raise NotReady('Импортированные источники публикуются отдельным выпуском с сохранением вопросов экспертной сверки')
     if Command.objects.filter(normative_set=dataset,kind__in=['release.prepare','release.publish'],state__in=['pending','delivering']).exists():
         raise Conflict('Preparation or publication is running')
     rid=str(uuid.uuid4())
@@ -160,10 +168,12 @@ def prepare_selected_sources(user,set_id,source_ids,expected_revision,key,mode='
     frozen=selection(user,dataset,source_ids)
     versions.update(curation=VERSION,curation_digest=digest(frozen))
     if mode==MODE:versions.update(quality=QUALITY_VERSION,analysis_selection_digest=digest(analyses))
+    if imports:versions.update(import_selection_digest=digest(imports))
     payload=dict(set_id=str(dataset.pk),actor_id=user.pk,release_id=rid,
                  source_revisions=sorted(source_ids),expected_revision=expected_revision,versions=versions,
                  curation=frozen,previous_release=str(dataset.active_release_id) if dataset.active_release_id else None)
     if mode==MODE:payload.update(mode=mode,analyses=analyses)
+    if imports:payload.update(mode='imported_reference',imports=imports)
     c=command(user,dataset,'release.prepare',identity,payload)
     audit(user,'release.prepare_requested',rid,{'sources':len(source_ids)})
     return c

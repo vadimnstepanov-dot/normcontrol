@@ -414,6 +414,9 @@ def worker_coverage(request):
 @boundary({'POST'},worker=True)
 def worker_fail(request):
     d=fields(request,{'command_id','lease','reason','permanent'})
+    if d['reason'] in {'area_import_validation_failed','area_import_delivery_failed'}:
+        from .portable_area import fail
+        return JsonResponse(fail(settings.KNOWLEDGE_WORKER_ID,**d))
     if d['reason'] in {'preparation_validation_failed','preparation_failed'}:
         from .curation import fail_preparation
         return JsonResponse(fail_preparation(settings.KNOWLEDGE_WORKER_ID,**d))

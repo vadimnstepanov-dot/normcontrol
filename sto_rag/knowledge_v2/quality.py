@@ -130,6 +130,8 @@ def counts(catalog):
 def limitation(policy):
     q=policy.get('quality',{})
     if not q:return []
+    if q.get('mode')=='imported_reference':
+        return [q['limitation']+' Неподтверждённые требования не дают окончательных нарушений; карточки с блокирующими вопросами не исполняются моделью.']
     return [f"Тестовый нормативный выпуск: рабочих требований {q['counts'].get('ready',0)}, "
             f"кандидатов вне автоматической проверки {q['counts'].get('candidate',0)}. "
             f"Вопросов полноты источников {q.get('coverage_gap_count',0)}, "

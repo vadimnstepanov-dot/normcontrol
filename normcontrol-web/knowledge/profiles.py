@@ -49,7 +49,7 @@ def activate_extracted_profiles(command,source,profiles):
 
 
 @transaction.atomic
-def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None,*,dataset=None,create_identity=False):
+def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None,*,dataset=None,create_identity=False,verified_bindings=()):
     if dataset is None and not user.is_staff:raise PermissionDenied('Administrator required for legacy global profiles')
     scope=Scope.objects.select_for_update().get(pk=scope_id);require(user,scope,'review')
     if dataset and dataset.scope_id!=scope.pk:raise ValueError('Area scope mismatch')
@@ -78,7 +78,11 @@ def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None
         source=SourceUpload.objects.get(pk=binding['source_id'],normative_set__scope=scope)
         if dataset and source.normative_set_id!=dataset.pk:raise ValueError('Source outside selected area')
         analyses=Command.objects.filter(normative_set=source.normative_set,kind='source.analyze',state='done',payload__source_id=str(source.pk))
-        if not any(binding['profile_id'] in [p['id'] for p in c.result.get('summary',{}).get('profiles',[])] for c in analyses):
+        verified=(str(source.pk),binding['profile_id']) in verified_bindings
+        if not verified:
+            imports=Command.objects.filter(normative_set=source.normative_set,kind='area.import',state='done')
+            verified=any(binding in p['definition'].get('bindings',[]) for c in imports for p in c.payload.get('profiles',[]))
+        if not verified and not any(binding['profile_id'] in [p['id'] for p in c.result.get('summary',{}).get('profiles',[])] for c in analyses):
             raise ValueError('Source profile not analyzed')
     if profile_id and not create_identity:
         row=DocumentProfile.objects.select_for_update().get(pk=identity,scope=scope)

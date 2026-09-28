@@ -61,6 +61,7 @@ def materialize(store,payload,original_ids,*,analyses=None):
     effective=[];catalog=[];seen={}
     from .quality import assessment,duplicate_key,counts,MODE,VERSION as QUALITY_VERSION,source_example_scopes
     examples={s:source_example_scopes(store,a) for s,a in (analyses or {}).items()}
+    imported=payload.get('mode')=='imported_reference'
     edge_map={}
     with store.connection() as db:
         for edge in db.execute("SELECT id,version,payload FROM records WHERE set_id=? AND kind='dependency'",(sid,)):
@@ -80,6 +81,10 @@ def materialize(store,payload,original_ids,*,analyses=None):
         if not memberships:levels['blocking_reasons'].append('profile_unresolved')
         card['publication_trust']=levels;card['expert_approved']=levels['approval_current']
         quality=None
+        if imported:
+            quality=dict(version='portable-source-evidence-v1',status='reference' if card['entity_type'] in ('definition','permission','recommendation','assumption') and row['provenance'] else 'candidate' if levels['blocking_reasons'] else 'ready',
+                reasons=list(levels['blocking_reasons']),expert_approval=levels['approval_current'])
+            card['quality']=quality
         if analyses is not None:
             gaps={g['locator'] for g in analyses[item['source_id']]['coverage_audit']['gaps']}
             gaps.update(g['locator'] for g in analyses[item['source_id']].get('source_gaps',[]) if g.get('locator'))
@@ -108,7 +113,7 @@ def materialize(store,payload,original_ids,*,analyses=None):
         if row['state']:record_refs.append((item['id'],item['revision']))
         store.put_record(sid,kind,rid,1,value,refs=record_refs);refs.add((rid,1))
         active_term=kind!='term_definition' or glossary_active is None or item['id'] in glossary_active
-        if active_term and (quality is None or quality['status']=='ready' or (quality['status']=='reference' and kind=='term_definition')):effective.append([rid,1])
+        if active_term and (imported or quality is None or quality['status']=='ready' or (quality['status']=='reference' and kind=='term_definition')):effective.append([rid,1])
         # Dependency edges still point to exact source versions. Reattach their
         # origin to the effective card so the review retains critical context.
         for edge,dependency in edge_map.get((item['base_id'],1),[]):
@@ -132,6 +137,10 @@ def materialize(store,payload,original_ids,*,analyses=None):
     links=compile_links(selection,catalog,loaded)
     policy=dict(links=links,version=VERSION,effective_refs=effective,profiles=compiled_profiles,curation_digest=checksum(selection),catalog=catalog,
                 profile_snapshot=profiles)
+    if imported:
+        policy['quality']=dict(mode='imported_reference',version='portable-source-evidence-v1',counts=counts(catalog),
+            complete=False,coverage_gap_count=None,source_gap_count=None,imports=payload['imports'],
+            limitation='Цитаты проверены по оригиналам. Полнота выделения норм не подтверждена; вопросы экспертной сверки не разрешены публикацией.')
     if analyses is not None:
         totals=counts(catalog)
         if not totals.get('ready'):raise NotReady('No complete, applicable mandatory requirements passed screening')
