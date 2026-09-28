@@ -1,0 +1,157 @@
+services:
+  qdrant:
+    image: ${QDRANT_IMAGE:?Set a pinned Qdrant image tag in .env}
+    restart: unless-stopped
+    stop_grace_period: 2m
+    cpus: 1.0
+    mem_limit: 2g
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    ports:
+      - "${QDRANT_BIND:-127.0.0.1:6333:6333}"
+    volumes:
+      - qdrant-v2:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo >/dev/tcp/127.0.0.1/6333"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging: &bounded-logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  embeddings:
+    init: true
+    build:
+      context: ../../sto_rag
+      dockerfile: knowledge_v2/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 2m
+    command:
+      - --model
+      - ${EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+      - --host
+      - 0.0.0.0
+      - --cache-dir
+      - /models
+      - --threads
+      - "2"
+      - --batch-size
+      - "8"
+    cpus: 2.0
+    mem_limit: 4g
+    ports:
+      - "${EMBEDDINGS_BIND:-127.0.0.1:8109:8109}"
+    volumes:
+      - ${EMBEDDING_CACHE_PATH:?Set an absolute local model cache path}:/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8109/health', timeout=3).read()"]
+      interval: 60s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    logging: *bounded-logs
+  index-worker:
+    init: true
+    build:
+      context: ../../sto_rag
+      dockerfile: knowledge_v2/Dockerfile
+    entrypoint: ["python", "-m", "knowledge_v2.index_worker"]
+    command:
+      - --data-dir
+      - /data
+      - --model
+      - ${EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+      - --model-cache
+      - /models
+      - --embedding-url
+      - http://embeddings:8109
+      - --qdrant-url
+      - http://qdrant:6333
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 10m
+    cpus: 1.0
+    mem_limit: 2g
+    volumes:
+      - ${EMBEDDING_CACHE_PATH:?Set an absolute local model cache path}:/models:ro
+      - ${KNOWLEDGE_DATA_PATH:?Set an absolute canonical knowledge path}:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('file:/data/knowledge-v2.sqlite3?mode=ro', uri=True, timeout=3).execute('select 1').fetchone()"]
+      interval: 60s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging: *bounded-logs
+  knowledge-worker:
+    profiles: [worker]
+    init: true
+    build:
+      context: ../..
+      dockerfile: deploy/knowledge-v2/worker.Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 10m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; from pathlib import Path; os.kill(1,0); assert Path('/data/knowledge-v2.sqlite3').is_file()"]
+      interval: 60s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    environment:
+      NORMCONTROL_KNOWLEDGE_DATA: /data
+      KNOWLEDGE_EMBEDDING_URL: http://embeddings:8109
+      KNOWLEDGE_QDRANT_URL: http://qdrant:6333
+      NORMCONTROL_LLM_ENDPOINT: ${KNOWLEDGE_LLM_ENDPOINT:-}
+      NORMCONTROL_LLM_API_KEY: ${KNOWLEDGE_LLM_API_KEY:-}
+      KNOWLEDGE_LLM_MODEL: ${KNOWLEDGE_LLM_MODEL:-local-qwen}
+      KNOWLEDGE_LLM_REVISION: ${KNOWLEDGE_LLM_REVISION:-}
+      KNOWLEDGE_QUALITY_SCREENING: ${KNOWLEDGE_QUALITY_SCREENING:-1}
+      KNOWLEDGE_VISION_ENDPOINT: ${KNOWLEDGE_VISION_ENDPOINT:-}
+      KNOWLEDGE_VISION_MODEL: ${KNOWLEDGE_VISION_MODEL:-local-qwen}
+      KNOWLEDGE_VISION_REVISION: ${KNOWLEDGE_VISION_REVISION:-}
+      KNOWLEDGE_VISION_API_KEY: ${KNOWLEDGE_VISION_API_KEY:-}
+      NORMCONTROL_KNOWLEDGE_PORTAL: ${KNOWLEDGE_PORTAL_URL:-}
+      NORMCONTROL_KNOWLEDGE_WORKER_TOKEN: ${KNOWLEDGE_WORKER_TOKEN:-}
+    cpus: 2.0
+    mem_limit: 2g
+    volumes:
+      - ${KNOWLEDGE_DATA_PATH:?Set an absolute canonical knowledge path}:/data
+    logging: *bounded-logs
+  knowledge-portal:
+    profiles: [portal]
+    init: true
+    build:
+      context: ../..
+      dockerfile: deploy/knowledge-v2/portal.Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.Request('http://127.0.0.1:8110/normcontol/health/', headers={'X-Forwarded-Proto':'https'}); urllib.request.urlopen(r, timeout=3).read()"]
+      interval: 60s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    environment:
+      APP_DEBUG: ${APP_DEBUG:-0}
+      APP_SECRET: ${APP_SECRET:-}
+      APP_HOSTS: ${APP_HOSTS:-localhost,127.0.0.1,knowledge-portal}
+      APP_ORIGINS: ${APP_ORIGINS:-http://127.0.0.1:8110}
+      APP_DATA: /data
+      NORMCONTROL_KNOWLEDGE_V2: "1"
+      NORMCONTROL_KNOWLEDGE_WORKER_TOKEN: ${KNOWLEDGE_WORKER_TOKEN:-}
+    ports:
+      - "${PORTAL_BIND:-127.0.0.1:8110:8110}"
+    cpus: 1.0
+    mem_limit: 1g
+    volumes:
+      - portal-v2:/data
+    logging: *bounded-logs
+volumes:
+  qdrant-v2:
+  portal-v2:

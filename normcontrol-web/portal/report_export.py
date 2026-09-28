@@ -17,7 +17,7 @@ TYPE_LABELS = {
     'other': 'Прочее',
 }
 STATUS_LABELS = {
-    'confirmed': 'Подтверждено', 'candidate': 'Кандидат',
+    'checked':'Выполнение доказано', 'not_applicable':'Не применяется', 'confirmed': 'Подтверждено', 'candidate': 'Кандидат',
     'verifying': 'На перепроверке', 'question': 'Вопрос',
     'style': 'Редакторское предложение', 'rejected': 'Снято',
 }

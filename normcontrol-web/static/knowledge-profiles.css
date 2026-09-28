@@ -1,0 +1,10 @@
+.kp-grid{display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);gap:24px;align-items:start}
+.kp-grid .panel{min-width:0}.kp-grid h2{margin-bottom:16px}
+.kp-grid textarea{width:100%;max-width:100%;min-height:110px;resize:vertical;background:var(--bg);color:var(--text);font:inherit;line-height:1.55;border:1px solid var(--line);border-radius:10px;padding:12px}
+.kp-grid textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.kp-grid #id_advanced{font-family:ui-monospace,monospace;font-size:.85rem}
+.kp-grid .member-row{padding:16px 0;flex-wrap:wrap;gap:8px}.kp-grid .member-row a{overflow-wrap:anywhere}
+.kp-grid #id_parents,.kp-grid #id_bindings{max-height:260px;overflow:auto;accent-color:var(--accent)}
+.kp-grid #id_parents label,.kp-grid #id_bindings label{display:flex;align-items:baseline;gap:8px;padding:6px 0}
+.kp-grid .button.primary{margin-top:20px}.kp-scope{margin-bottom:24px}.kp-scope .button{margin-top:12px}
+@media(max-width:1100px){.kp-grid{grid-template-columns:minmax(0,1fr)}.kp-grid>.panel:first-child{max-height:320px;overflow:auto}}

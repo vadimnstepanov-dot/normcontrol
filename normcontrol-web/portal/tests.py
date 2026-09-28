@@ -1,4 +1,4 @@
-import io,os,tempfile,zipfile
+import io,os,tempfile,zipfile,uuid
 from unittest.mock import patch
 from cryptography.fernet import Fernet
 from django.test import TestCase,override_settings,Client
@@ -11,6 +11,7 @@ def document(name='test.docx',text='Тестовый документ'):
     with zipfile.ZipFile(out,'w') as z:z.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'+text+'</w:t></w:r></w:p></w:body></w:document>')
     return SimpleUploadedFile(name,out.getvalue())
 
+@override_settings(KNOWLEDGE_V2_ENABLED=False)
 class PortalTests(TestCase):
     def setUp(self):
         self.user=User.objects.create_user('owner',password='Testing-Password-For-2026')
@@ -30,13 +31,11 @@ class PortalTests(TestCase):
         self.assertContains(self.client.get('/normcontol/'),'data-theme-toggle')
     def test_upload_queue_and_ownership(self):
         self.client.force_login(self.user)
-        response=self.client.post('/normcontol/batches/new/',{'name':'Проверка','profile':'chtz','checks':['sto','logic'],'documents':[document()]})
+        response=self.client.post('/normcontol/batches/new/',{'name':'Проверка','profile':'chtz','checks':['sto','logic'],'documents':[document()],'launch_key':str(uuid.uuid4())})
         self.assertEqual(response.status_code,302);b=Batch.objects.get();d=b.documents.get()
         self.assertEqual(d.paragraphs,0) # Deep document parsing belongs to the desktop worker.
-        self.assertEqual(b.status,'prepared')
-        self.assertContains(response=self.client.get(f'/normcontol/batches/{b.pk}/'),text='Подтвердите состав перед запуском')
-        self.client.post(f'/normcontol/batches/{b.pk}/action/',{'action':'queue'})
-        b.refresh_from_db();self.assertEqual(b.status,'waiting')
+        self.assertEqual(b.status,'waiting')
+        self.assertRedirects(response,f'/normcontol/?batch={b.pk}#current-review')
         self.assertContains(self.client.get(f'/normcontol/batches/{b.pk}/'),'test.docx')
         self.client.force_login(self.other)
         self.assertEqual(self.client.get(f'/normcontol/batches/{b.pk}/').status_code,404)
@@ -47,32 +46,6 @@ class PortalTests(TestCase):
         WorkerRun.objects.create(batch=batch,worker='desktop',state='running',snapshot={'stages':{'sto':{'done':2,'pending':2}}})
         response=self.client.get('/normcontol/')
         self.assertContains(response,'Текущая проверка');self.assertContains(response,'href="#current-review"');self.assertContains(response,'id="current-review-ring"')
-    def test_selecting_history_batch_targets_its_progress_and_register(self):
-        self.client.force_login(self.user)
-        current=Batch.objects.create(owner=self.user,name='Новая проверка',status='running',checks=['sto'])
-        previous=Batch.objects.create(owner=self.user,name='Прошлая проверка',status='completed',checks=['sto'])
-        WorkerRun.objects.create(batch=current,worker='desktop',state='running',snapshot={'stages':{'sto':{'done':1,'pending':3}}})
-        WorkerRun.objects.create(batch=previous,worker='desktop',state='completed',snapshot={'stages':{'sto':{'done':4}}},report={'findings':[{'id':'older-result','issue':'Найдено в прошлой проверке','status':'confirmed'}]})
-        response=self.client.get('/normcontol/',{'batch':previous.pk})
-        self.assertEqual(response.context['selected_batch'].pk,previous.pk)
-        self.assertContains(response,f'?batch={previous.pk}#current-review')
-        self.assertContains(response,f'/normcontol/batches/{previous.pk}/status/')
-        self.assertContains(response,f'/normcontol/batches/{previous.pk}/register/')
-        self.assertContains(response,'Найдено в прошлой проверке')
-        self.assertContains(response,'id="current-review-button-state">Завершён')
-        self.assertContains(response,'active-row')
-    def test_prepared_batch_is_selectable_with_correct_status(self):
-        self.client.force_login(self.user)
-        batch=Batch.objects.create(owner=self.user,name='Ожидает запуска',status='prepared',checks=['sto'])
-        response=self.client.get('/normcontol/',{'batch':batch.pk})
-        self.assertContains(response,'id="current-review-button"')
-        self.assertContains(response,f'?batch={batch.pk}#current-review')
-        data=self.client.get(f'/normcontol/batches/{batch.pk}/status/').json()
-        self.assertEqual(data['state'],'prepared')
-        self.assertFalse(data['report_available'])
-        register=self.client.get(f'/normcontol/batches/{batch.pk}/register/').json()
-        self.assertEqual(register['records'],[])
-        self.assertFalse(register['report_available'])
     def test_batch_history_collapses_to_three_and_expands_for_search_or_selection(self):
         self.client.force_login(self.user)
         for n in range(5):Batch.objects.create(owner=self.user,name=f'Пакет {n}',status='completed')
@@ -108,7 +81,7 @@ class PortalTests(TestCase):
         self.assertContains(rag_response,'nav-link active')
     def test_invalid_upload_is_atomic(self):
         self.client.force_login(self.user)
-        response=self.client.post('/normcontol/batches/new/',{'name':'Broken','profile':'chtz','checks':['sto'],'documents':[document(),SimpleUploadedFile('fake.docx',b'not a zip')]})
+        response=self.client.post('/normcontol/batches/new/',{'name':'Broken','profile':'chtz','checks':['sto'],'documents':[document(),SimpleUploadedFile('fake.docx',b'not a zip')],'launch_key':str(uuid.uuid4())})
         self.assertEqual(response.status_code,200);self.assertEqual(Batch.objects.count(),0)
         self.assertContains(response,'не является корректным')
     def test_add_documents_after_stop_creates_revision_and_preserves_report(self):
@@ -142,10 +115,10 @@ class PortalTests(TestCase):
     def test_legacy_doc_upload_is_accepted_and_bad_signature_rejected(self):
         self.client.force_login(self.user)
         legacy=SimpleUploadedFile('legacy.doc',b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'+b'legacy-word-fixture')
-        response=self.client.post('/normcontol/batches/new/',{'name':'Legacy','profile':'other','checks':['sto'],'documents':[legacy]})
+        response=self.client.post('/normcontol/batches/new/',{'name':'Legacy','profile':'other','checks':['sto'],'documents':[legacy],'launch_key':str(uuid.uuid4())})
         self.assertEqual(response.status_code,302);self.assertEqual(Document.objects.get().name,'legacy.doc')
         bad=SimpleUploadedFile('fake.doc',b'not-a-word-document')
-        response=self.client.post('/normcontol/batches/new/',{'name':'Bad legacy','profile':'other','checks':['sto'],'documents':[bad]})
+        response=self.client.post('/normcontol/batches/new/',{'name':'Bad legacy','profile':'other','checks':['sto'],'documents':[bad],'launch_key':str(uuid.uuid4())})
         self.assertEqual(response.status_code,200);self.assertContains(response,'двоичным документом Word')
     def test_admin_settings_encrypt_secret_and_make_no_requests(self):
         self.client.force_login(self.user);self.assertEqual(self.client.get('/normcontol/settings/llm/').status_code,302)

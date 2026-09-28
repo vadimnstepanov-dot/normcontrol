@@ -8,17 +8,20 @@ import math
 import os
 import sqlite3
 import statistics
+import signal
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import re
 from pathlib import Path
 
 import psutil
 
 from nc5.common import DATA,write
-from nc5.runtime import BusyError,Lease
+from nc5.runtime import BusyError,Lease,SleepInhibitor
 from nc5.store import Store
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -59,7 +62,7 @@ def ready():
         with urllib.request.urlopen('http://127.0.0.1:'+MODEL_PORT+'/health',timeout=2) as response:
             return json.load(response).get('status')=='ok'
     except urllib.error.HTTPError as error:
-        return error.code==503  # llama.cpp may be busy while serving a request
+        return False  # 503 also means loading: never resume a review before HTTP 200.
     except (OSError,ValueError):return False
 
 
@@ -101,9 +104,45 @@ def latest_timing(db,last_ended):
         generation=float(timing.get('predicted_per_second') or 0)
         if not all(math.isfinite(x) for x in (prompt_n,predicted_n,prefill,generation)):
             return {'ended':ended}
-        return {'ended':ended,'stage':stage,'prompt_n':prompt_n,'predicted_n':predicted_n,
+        return {'source':'nc5','ended':ended,'stage':stage,'prompt_n':prompt_n,'predicted_n':predicted_n,
             'prefill_tps':round(prefill,2),'generation_tps':round(generation,2)}
     except (ValueError,TypeError,KeyError):return {'ended':ended}
+
+
+def model_label(process):
+    """Display the model filename prefix through its parameter count, never its path."""
+    if not process:return ''
+    try:
+        args=process.cmdline();name=''
+        for i,arg in enumerate(args):
+            if arg in ('-m','--model') and i+1<len(args):name=args[i+1];break
+            if arg.startswith('--model='):name=arg.split('=',1)[1];break
+        name=re.split(r'[/\\]',name)[-1]
+        match=re.search(r'\d+(?:\.\d+)?[bB](?=[^A-Za-z0-9]|$)',name)
+        return (name[:match.end()] if match else name.removesuffix('.gguf'))[:100]
+    except (psutil.Error,OSError):return ''
+
+
+def latest_v2_timing(last_ended):
+    # Reading one atomic file avoids scanning large canonical task JSON or
+    # launching WSL/Python for every minute sample.
+    configured=os.getenv('NORMCONTROL_KNOWLEDGE_TELEMETRY')
+    if configured:path=Path(configured)
+    elif os.name=='nt':
+        distro=os.getenv('NORMCONTROL_KNOWLEDGE_DISTRO','NormControl')
+        path=Path('\\\\wsl.localhost\\'+distro+'\\opt\\normcontrol\\data\\llm-telemetry.json')
+    else:path=Path(os.getenv('NORMCONTROL_KNOWLEDGE_DATA','/data'))/'llm-telemetry.json'
+    try:
+        if path.stat().st_size>4096:return None
+        item=json.loads(path.read_text(encoding='utf8'))
+        if item.get('source')!='knowledge-v2' or not isinstance(item.get('stage'),str):return None
+        for key in ('ended','prompt_n','predicted_n','prefill_tps','generation_tps'):
+            value=item.get(key)
+            if value is None and key!='ended':continue
+            if type(value) not in (int,float) or not math.isfinite(value) or value<0:return None
+        if item['ended']<=last_ended:return None
+        return {k:item.get(k) for k in ('source','ended','stage','prompt_n','predicted_n','prefill_tps','generation_tps')}
+    except (OSError,ValueError,TypeError):return None
 
 
 def bucket(item):
@@ -137,22 +176,44 @@ class Degradation:
         self.baselines.clear();self.recent.clear();self.last_restart=now
 
 
-def wait_for_checkpoint(store,timeout=900):
-    """Pause current jobs, wait for the in-flight answer to be saved and engine lease freed."""
+def save_state(**changes):
+    previous=json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {}
+    write(STATE,{**previous,**changes})
+
+
+def pause_jobs(store,remembered):
+    """Persist ownership before the transaction; never adopt a user's paused job."""
+    previous=json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {}
+    tokens=previous.get('pause_tokens',{})
     with store.connect() as connection:
-        ids=[row[0] for row in connection.execute("SELECT id FROM jobs WHERE state IN ('running','preparing')")]
-    for jid in ids:store.update(jid,'paused')
+        connection.execute('BEGIN IMMEDIATE')
+        rows=connection.execute("SELECT id FROM jobs WHERE state IN ('running','preparing')").fetchall()
+        stamp=time.time()
+        for row in rows:
+            if row[0] not in remembered:remembered.append(row[0])
+            tokens[row[0]]=stamp
+        save_state(resume_jobs=remembered,pause_tokens=tokens)
+        for row in rows:
+            connection.execute("UPDATE jobs SET state='paused',updated=? WHERE id=?",(stamp,row[0]))
+            store.event(row[0],'llm_control_pause',{},connection)
+
+
+def wait_for_checkpoint(store,timeout=900,lease=None,remembered=None):
+    """Pause current jobs, wait for the in-flight answer to be saved and engine lease freed."""
+    ids=remembered if remembered is not None else []
+    owned_lease=lease or Lease(str(store.path)+'.worker.lock')
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
-        with store.connect() as connection:
-            busy=connection.execute("SELECT count(*) FROM tasks WHERE state='running' AND job IN (SELECT id FROM jobs WHERE state='paused')").fetchone()[0]
-        if not busy:
-            try:
-                with Lease(str(store.path)+'.worker.lock'):return ids
-            except BusyError:pass
+        # Preparation can update its state while winding down. Reapply until the
+        # engine releases its lease, then keep that lease through the whole restart.
+        pause_jobs(store,ids)
+        try:
+            owned_lease.__enter__()
+            pause_jobs(store,ids)
+            if lease is None:owned_lease.__exit__()
+            return ids
+        except BusyError:pass
         time.sleep(2)
-    for jid in ids:
-        if store.job(jid)['state']=='paused':store.update(jid,'running')
     raise TimeoutError('Не удалось дождаться контрольной точки; модель не остановлена')
 
 
@@ -162,15 +223,26 @@ def stop_backend():
     # The existing context-guard runner notices backend exit and closes its
     # own child. Do not kill the user's terminal or unrelated Python workers.
     runner=process.parent()
-    process.terminate()
-    try:process.wait(20)
-    except psutil.TimeoutExpired:process.kill();process.wait(10)
+    if runner and not any(Path(arg).name=='runner.py' for arg in runner.cmdline()):runner=None
+    if os.name=='nt':
+        helper=Path(__file__).with_name('llm_console_signal.py')
+        result=subprocess.run([sys.executable,str(helper),str(process.pid)],timeout=10,
+            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),capture_output=True,text=True)
+        if result.returncode:raise RuntimeError('Нет изолированной консоли LLM для штатной остановки; проверка сохранена на паузе')
+    else:process.send_signal(signal.SIGINT)
+    try:process.wait(60)
+    except psutil.TimeoutExpired:raise RuntimeError('LLM не завершила штатную остановку; принудительное завершение отменено')
     if runner and runner.is_running():
         try:runner.wait(15)
         except psutil.TimeoutExpired:raise RuntimeError('Context Guard не завершился')
     deadline=time.monotonic()+15
     while time.monotonic()<deadline and backend():time.sleep(.5)
     if backend():raise RuntimeError('Сервер модели не остановился')
+    # Process exit releases its RAM/CUDA allocations. Do not flush unrelated
+    # applications' memory or reset the GPU. Also wait for the serving port.
+    with socket.socket() as probe:
+        if probe.connect_ex(('127.0.0.1',int(MODEL_PORT)))==0:
+            raise RuntimeError('Порт LLM ещё занят; запуск второго экземпляра отменён')
 
 
 def start_backend():
@@ -194,23 +266,45 @@ def start_backend():
 
 
 def resume(store,ids):
+    previous=json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {}
+    tokens=previous.get('pause_tokens',{})
     for jid in ids:
-        if store.job(jid)['state']=='paused':store.update(jid,'running')
+        with store.connect() as connection:
+            token=tokens.get(jid)
+            if token is None:continue
+            # task_finished can update jobs.updated after our pause: use the
+            # explicit state event to distinguish this from a later user pause.
+            last=connection.execute("SELECT kind,data FROM events WHERE job=? AND (kind='llm_control_pause' OR (kind='state' AND json_extract(data,'$.state') IS NOT NULL)) ORDER BY seq DESC LIMIT 1",(jid,)).fetchone()
+            if not last or last['kind']!='llm_control_pause':continue
+            result=connection.execute("UPDATE jobs SET state='running',updated=? WHERE id=? AND state='paused'",(time.time(),jid))
+            if result.rowcount:store.event(jid,'llm_control_resume',{},connection)
 
 
 def control(action,store,remembered):
     if action not in ('start','stop','restart'):raise ValueError('Invalid model action')
-    if action=='start':
-        start_backend();resume(store,remembered)
-        return []
-    paused=wait_for_checkpoint(store) if backend() else []
-    remembered=list(dict.fromkeys(remembered+paused))
-    persisted=json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {}
-    write(STATE,{**persisted,'resume_jobs':remembered})
-    stop_backend()
-    if action=='stop':return remembered
-    start_backend();resume(store,remembered)
-    return []
+    remembered=list(remembered)
+    lease=Lease(str(store.path)+'.worker.lock')
+    with SleepInhibitor():
+        try:
+            save_state(phase='Ожидание сохранения текущей части')
+            wait_for_checkpoint(store,lease=lease,remembered=remembered)
+            if action in ('stop','restart'):
+                save_state(phase='Штатная остановка LLM')
+                stop_backend()
+            if action=='stop':
+                save_state(phase='LLM выключена; проверка на паузе')
+                return remembered
+            save_state(phase='Загрузка LLM')
+            start_backend()
+            if not ready():raise RuntimeError('LLM не подтвердила готовность; проверка остаётся на паузе')
+            save_state(phase='Возобновление проверки')
+            resume(store,remembered)
+            save_state(resume_jobs=[],pause_tokens={},phase='Готово')
+            return []
+        except Exception:
+            save_state(phase='Ошибка управления; прогресс сохранён')
+            raise
+        finally:lease.__exit__()
 
 
 def main(envfile):
@@ -225,9 +319,9 @@ def main(envfile):
     last_command=previous.get('last_command',{})
     with sqlite3.connect(db,timeout=2) as connection:
         last_ended=connection.execute('SELECT coalesce(max(ended),0) FROM tasks').fetchone()[0]
-    last_timing=None;last_pid=None;degradation=Degradation()
+    last_timing=None;last_pid=None;last_v2_ended=0;degradation=Degradation()
     psutil.cpu_percent(interval=None)
-    note='';pending_command=None
+    note='';pending_command=previous.get('operation')
     while True:
         started=time.monotonic();process=backend()
         pid=process.pid if process else None
@@ -237,6 +331,10 @@ def main(envfile):
         if timing:
             last_ended=timing['ended']
             if 'generation_tps' in timing:last_timing=timing
+        v2_timing=latest_v2_timing(last_v2_ended)
+        if v2_timing:
+            last_v2_ended=v2_timing['ended']
+            if not last_timing or v2_timing['ended']>last_timing['ended']:last_timing=v2_timing
         used,total,utilization=gpu()
         memory=psutil.virtual_memory()
         profile='vision' if process and '--mmproj' in process.cmdline() else 'text' if process else ''
@@ -247,7 +345,9 @@ def main(envfile):
             'ram_total_mb':round(memory.total/1048576),'vram_used_mb':used,'vram_total_mb':total,
             'gpu_percent':utilization,'generation_tps':current_timing.get('generation_tps') if current_timing else None,
             'prefill_tps':current_timing.get('prefill_tps') if current_timing else None,
-            'vision':profile=='vision','profile':profile,'note':note}
+            'vision':profile=='vision','profile':profile,'note':note,'model_label':model_label(process),
+            'timing_source':current_timing.get('source','nc5') if current_timing else '',
+            'timing_at':current_timing['ended'] if current_timing else None}
         payload={'sample':sample}
         try:
             req=urllib.request.Request(endpoint,data=json.dumps(payload).encode(),headers={
@@ -262,6 +362,7 @@ def main(envfile):
                 else:
                     success=False
                     if automatic:degradation.last_restart=time.time()
+                    save_state(operation=command)
                     try:
                         remembered=control(command['action'],store,remembered)
                         degradation.restarted(time.time())
@@ -271,7 +372,7 @@ def main(envfile):
                         note=type(error).__name__+': '+str(error)[:110]
                         remembered=json.loads(STATE.read_text(encoding='utf-8')).get('resume_jobs',remembered) if STATE.exists() else remembered
                     last_command={'id':command['id'],'success':success,'message':note}
-                    write(STATE,{'resume_jobs':remembered,'last_command':last_command})
+                    save_state(resume_jobs=remembered,last_command=last_command,operation=None)
                 # Acknowledge immediately; a failed command remains visible to admin.
                 payload={'sample':{**sample,'online':ready(),'note':note},'ack':command['id'],
                     'success':success,'message':note}

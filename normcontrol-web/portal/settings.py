@@ -7,13 +7,21 @@ if not SECRET_KEY:raise RuntimeError('APP_SECRET is required')
 ALLOWED_HOSTS=os.getenv('APP_HOSTS','localhost,127.0.0.1,testserver').split(',')
 CSRF_TRUSTED_ORIGINS=os.getenv('APP_ORIGINS','http://127.0.0.1:8106').split(',')
 INSTALLED_APPS=['django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles','portal']
+KNOWLEDGE_V2_ENABLED=os.getenv('NORMCONTROL_KNOWLEDGE_V2')=='1'
+if KNOWLEDGE_V2_ENABLED:INSTALLED_APPS.append('knowledge')
+KNOWLEDGE_WORKER_TOKEN=os.getenv('NORMCONTROL_KNOWLEDGE_WORKER_TOKEN','')
+KNOWLEDGE_WORKER_ID=os.getenv('NORMCONTROL_KNOWLEDGE_WORKER_ID','knowledge-worker')
+KNOWLEDGE_SNAPSHOT_VERSIONS={'engine':'knowledge-v2-foundation','runtime_binding':'pending-stage6','response_schema':'foundation-v1'}
 MIDDLEWARE=['django.middleware.security.SecurityMiddleware','django.contrib.sessions.middleware.SessionMiddleware','django.middleware.common.CommonMiddleware','django.middleware.csrf.CsrfViewMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware','portal.middleware.PasswordChangeMiddleware','django.contrib.messages.middleware.MessageMiddleware','django.middleware.clickjacking.XFrameOptionsMiddleware','portal.middleware.HeadersMiddleware']
+if os.getenv('APP_STATIC_SELF_SERVE')=='1':MIDDLEWARE.insert(1,'whitenoise.middleware.WhiteNoiseMiddleware')
 ROOT_URLCONF='portal.urls'
 TEMPLATES=[{'BACKEND':'django.template.backends.django.DjangoTemplates','DIRS':[BASE_DIR/'templates'],'APP_DIRS':True,'OPTIONS':{'context_processors':['django.template.context_processors.request','django.contrib.auth.context_processors.auth','django.contrib.messages.context_processors.messages','portal.views.common']}}]
 WSGI_APPLICATION='portal.wsgi.application'
 DATA_DIR=Path(os.getenv('APP_DATA',str(BASE_DIR/'data')))
 DATA_DIR.mkdir(parents=True,exist_ok=True)
-DATABASES={'default':{'ENGINE':'django.db.backends.sqlite3','NAME':DATA_DIR/'portal.sqlite3','OPTIONS':{'timeout':30}}}
+# Reserve the writer at entry to atomic mutations. Otherwise a worker heartbeat
+# can invalidate a long read snapshot just before prepare/publish writes it.
+DATABASES={'default':{'ENGINE':'django.db.backends.sqlite3','NAME':DATA_DIR/'portal.sqlite3','OPTIONS':{'timeout':30,'transaction_mode':'IMMEDIATE'}}}
 LANGUAGE_CODE='ru-ru'
 TIME_ZONE='Europe/Moscow'
 USE_I18N=True

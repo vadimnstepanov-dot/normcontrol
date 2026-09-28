@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block title %}Профили документов{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{% static 'knowledge-profiles.css' %}">
+<div class="page-heading"><div><span class="eyebrow">НОРМАТИВНАЯ БАЗА · НОВАЯ ВЕРСИЯ</span><h1>Профили документов</h1><p>Один документ может соответствовать нескольким профилям. Общие требования и требования приложений складываются.</p></div></div>
+<div class="notice">Профили новой нормативной базы. Подключение к рабочим проверкам выполняется на этапе интеграции конвейера.</div>
+<form method="get" class="panel form-panel kp-scope"><label for="profile-scope">Нормативная область</label><select name="scope" id="profile-scope">{% for s in scopes %}<option value="{{ s.pk }}" {% if s.pk == scope.pk %}selected{% endif %}>{{ s.name }}</option>{% endfor %}</select><button class="button secondary">Открыть область</button></form>
+{% if scope %}<div class="kp-grid"><section class="panel form-panel"><h2>Профили области</h2><a class="button secondary" href="?scope={{ scope.pk }}">+ Новый профиль</a>{% for p in profiles %}<div class="member-row"><a href="?scope={{ scope.pk }}&amp;profile={{ p.pk }}">{{ p.name }}</a><span class="badge">Версия {{ p.revision }}</span></div>{% empty %}<p class="muted">Создайте общий профиль организации, затем профили стандарта и видов документов.</p>{% endfor %}</section>
+<section class="panel form-panel"><h2>{% if current %}{{ current.name }}{% else %}Новый профиль{% endif %}</h2><form method="post">{% csrf_token %}{{ form.non_field_errors }}{% for f in form %}{% if f.is_hidden %}{{ f }}{% elif f.name == 'advanced' %}<details><summary>Расширенные условия применимости</summary><div class="field">{{ f }}{{ f.errors }}<small>{{ f.help_text }}</small></div></details>{% else %}<div class="field"><label for="{{ f.id_for_label }}">{{ f.label }}</label>{{ f }}{{ f.errors }}{% if f.help_text %}<small>{{ f.help_text }}</small>{% endif %}</div>{% endif %}{% endfor %}<p class="muted">Пустое условие означает «требует уточнения», а не «применяется ко всем». Сохранение создаёт новую версию.</p><button class="button primary wide" type="submit">Сохранить профиль</button></form>
+{% if history %}<details><summary>История версий</summary>{% for r in history %}<p>Версия {{ r.revision }} · {{ r.created|date:'d.m.Y H:i' }}</p>{% endfor %}</details>{% endif %}</section></div>{% else %}<p>Сначала создайте нормативную область через API v2.</p>{% endif %}
+{% endblock %}

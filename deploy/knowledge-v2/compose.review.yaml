@@ -1,0 +1,13 @@
+# Separate orchestration avoids head-of-line blocking behind a long normative analysis.
+# GPU turns remain serialized through the SAME canonical volume/resource key.
+services:
+  review-worker:
+    extends:
+      file: compose.yaml
+      service: knowledge-worker
+    image: ${KNOWLEDGE_REVIEW_IMAGE:-normcontrol/knowledge-worker:9.1.7}
+    environment:
+      KNOWLEDGE_REVIEW_ONLY: "1"
+    cpus: 1.0
+    mem_limit: 1g
+    stop_grace_period: 10m

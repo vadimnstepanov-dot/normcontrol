@@ -1,0 +1,42 @@
+{% extends 'base.html' %}{% load static %}
+{% block title %}{% if attaching %}Добавить проверку СТО{% else %}Новая проверка{% endif %}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{% static 'launch.css' %}?v=20260928-1">
+<script defer src="{% static 'launch.js' %}?v=20260928-1"></script>
+<a class="back-link" href="{% url 'dashboard' %}">← Рабочее пространство</a>
+<div class="page-heading launch-heading"><div><span class="eyebrow">НОРМОКОНТРОЛЬ ДОКУМЕНТОВ</span><h1>{% if attaching %}Добавить проверку СТО{% else %}Новая проверка{% endif %}</h1><p>{% if batch %}{{ batch.name }}{% else %}Добавьте документы и выберите направления. Всё готово к запуску на этой странице.{% endif %}</p></div><span class="launch-badge">Один экран · один запуск</span></div>
+<form method="post" enctype="multipart/form-data" id="launch-form" data-existing-count="{{ batch.documents.count|default:0 }}" data-attaching="{{ attaching|yesno:'true,false' }}">
+{% csrf_token %}{{ form.launch_key }}
+<div class="notice error" id="launch-error-summary" tabindex="-1" role="alert" {% if not form.non_field_errors %}hidden{% endif %}>{{ form.non_field_errors }}</div>
+<div class="launch-grid"><div class="launch-fields">
+<section class="panel form-panel launch-section" aria-labelledby="launch-documents-title"><h2 id="launch-documents-title"><span class="section-number">01</span> Документы</h2>
+{% if batch %}<ul class="launch-existing-files">{% for d in batch.documents.all %}<li><span class="doc-icon" aria-hidden="true">W</span><div><strong>{{ d.name }}</strong><small>{{ d.detected_type }} · {{ d.size|filesizeformat }}</small></div></li>{% endfor %}</ul>
+{% else %}<label class="dropzone launch-dropzone" id="dropzone" for="documents"><span class="upload-icon" aria-hidden="true">↑</span><strong>Выберите или перетащите документы</strong><small>DOC / DOCX · до 20 файлов · 50 МБ на файл · 100 МБ на пакет</small><input type="file" name="documents" id="documents" accept=".doc,.docx" multiple aria-describedby="upload-error"></label>
+<div id="file-list" class="file-list" aria-live="polite"></div><p id="upload-error" class="error-text" role="alert"></p>
+<div class="field launch-name"><label for="{{ form.name.id_for_label }}">Название проверки <small>необязательно</small></label>{{ form.name }}<div data-launch-error-field="name">{{ form.name.errors }}</div></div>
+{% endif %}<p class="muted">Типы документов и связи комплекта определяются автоматически. Исходные файлы сохраняются без изменений.</p>
+{% if batch.fresh_review %}<p class="launch-warning">Будет выполнена новая проверка всех документов с первого этапа. Предыдущая проверка и её отчёт сохранятся.</p>{% endif %}
+</section>
+<section class="panel form-panel launch-section" aria-labelledby="launch-directions-title"><h2 id="launch-directions-title"><span class="section-number">02</span> Направления проверки</h2>
+<div class="check-list launch-checks">{{ form.checks }}</div><div data-launch-error-field="checks">{{ form.checks.errors }}</div>
+{% if attaching %}<p class="launch-warning">Текущая проверка продолжится с сохранённого места. Можно добавить СТО; остальные направления должны остаться прежними.</p>{% else %}<p class="muted">Для комплекта документов выбранные направления включают проверку связей между документами.</p>{% endif %}
+</section>
+{% if knowledge_v2_enabled %}<section class="panel form-panel launch-section" id="launch-normatives" aria-labelledby="launch-norms-title"><h2 id="launch-norms-title"><span class="section-number">03</span> Нормативная база</h2>
+<p class="muted">Выберите наборы одной проектной области. Их опубликованные версии закрепятся за этой проверкой.</p>
+{% if form.norms %}<div class="check-list launch-norm-list">{{ form.normative_sets }}</div>{% else %}<p class="launch-warning">Нет доступных опубликованных нормативов. Для проверки СТО подготовьте базу или снимите это направление.</p><a class="back-link" href="{% url 'knowledge-workspace' %}" target="_blank" rel="noopener">Открыть нормативную базу в новой вкладке ↗</a>{% endif %}
+<div data-launch-error-field="normative_sets">{{ form.normative_sets.errors }}</div>
+<details class="launch-details"><summary>Опыт рецензий и условия проверки</summary><div class="field"><label for="{{ form.experience.id_for_label }}">{{ form.experience.label }}</label>{{ form.experience }}<div data-launch-error-field="experience">{{ form.experience.errors }}</div><small>Из той же проектной области. Дополняет нормативы и не заменяет их.</small></div>{% for n in norms %}<p class="muted">{{ n.name }}: рабочих требований — {{ n.requirements }}; кандидатов — {{ n.candidates }}, в проверку не включены.</p>{% endfor %}<p class="muted">Кандидаты требований исключены из проверки. Неподтверждённые экспертом требования дают только предварительные замечания. До независимой проверки полноты охват СТО неполный. Наличие опубликованной базы само по себе не подтверждает полный охват СТО.</p></details>
+</section>{% endif %}
+</div>
+<aside class="panel form-panel launch-summary" aria-labelledby="launch-summary-title"><span class="eyebrow">ПЕРЕД ЗАПУСКОМ</span><h2 id="launch-summary-title">Ваша проверка</h2>
+<dl><div><dt>Документы</dt><dd id="launch-document-count">{{ batch.documents.count|default:0 }}</dd></div><div><dt>Направления</dt><dd id="launch-direction-count">—</dd></div>{% if knowledge_v2_enabled %}<div id="launch-norm-count-row"><dt>Нормативные наборы</dt><dd id="launch-norm-count">—</dd></div>{% endif %}</dl>
+<ul id="launch-selected-directions" class="launch-selected"></ul>
+<p class="launch-warning" id="launch-without-sto" hidden>Соответствие СТО в этой проверке не оценивается.</p>
+<p id="launch-readiness" class="muted" aria-live="polite">Проверьте состав и настройки перед запуском.</p>
+{% if can_manage %}<button class="button primary wide" id="launch-submit" type="submit">{% if attaching %}Добавить этап СТО{% else %}Запустить проверку{% endif %} <span aria-hidden="true">→</span></button>{% endif %}
+<p class="launch-footnote">После нажатия откроется ход обработки. Повторное подтверждение не потребуется.</p>
+<div class="launch-execution"><span class="status-light" aria-hidden="true"></span><div><strong>{% if worker_online %}Обработчик на связи{% else %}Обработчик пока недоступен{% endif %}</strong><small>{% if worker_online %}Проверка начнётся, когда подойдёт её очередь.{% else %}После запуска пакет сохранится в очереди и начнёт проверяться, когда обработчик подключится.{% endif %}</small></div></div>
+<noscript><p class="launch-warning">При ошибке отправки выберите файлы повторно. Остальные настройки сохранятся.</p></noscript>
+</aside></div></form>
+{{ normative_scopes|json_script:'launch-normative-scopes' }}{{ experience_scopes|json_script:'launch-experience-scopes' }}
+{% endblock %}

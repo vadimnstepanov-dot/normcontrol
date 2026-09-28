@@ -1,0 +1,27 @@
+# Lightweight editing worker: no LLM endpoint, GPU, OCR or vector index access.
+services:
+  expert-worker:
+    image: ${KNOWLEDGE_EXPERT_IMAGE:-normcontrol/knowledge-expert:9.1.7}
+    build:
+      context: ../..
+      dockerfile: deploy/knowledge-v2/expert.Dockerfile
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 2m
+    cpus: 0.5
+    mem_limit: 256m
+    environment:
+      NORMCONTROL_KNOWLEDGE_DATA: /data
+      NORMCONTROL_KNOWLEDGE_PORTAL: ${KNOWLEDGE_PORTAL_URL:?Portal URL required}
+      NORMCONTROL_KNOWLEDGE_WORKER_TOKEN: ${KNOWLEDGE_WORKER_TOKEN:?Dedicated token required}
+      KNOWLEDGE_EXPERT_ONLY: "1"
+    volumes:
+      - ${KNOWLEDGE_DATA_PATH:?Canonical store required}:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; from pathlib import Path; os.kill(1,0); assert Path('/data/knowledge-v2.sqlite3').is_file()"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}

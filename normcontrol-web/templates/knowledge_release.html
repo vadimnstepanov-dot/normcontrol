@@ -1,0 +1,30 @@
+{% extends 'base.html' %}{% load static %}
+{% block title %}Нормативный выпуск · Состав и изменения{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}">
+<link rel="stylesheet" href="{% static 'knowledge-release.css' %}">
+<div id="release-app" data-api="/normcontol/api/v2/" data-set="{{ dataset.id }}" data-release="{{ release.id }}" data-scope="{{ dataset.scope_id }}">
+  <a href="{% url 'knowledge-workspace' %}">← Нормативная база</a>
+  <div class="page-heading"><div><span class="eyebrow">ВЕРСИОНИРОВАННЫЙ НОРМАТИВНЫЙ ВЫПУСК</span><h1>{{ dataset.name }}</h1><p>{{ release.created|date:'d.m.Y H:i' }} · состав закреплён, старые проверки сохраняют свой снимок</p></div></div>
+  <p id="rel-notice" role="status" aria-live="polite"></p>
+  <section class="panel rel-summary" id="rel-summary" aria-label="Готовность и доверие"></section>
+  <div class="rel-tabs" role="group" aria-label="Режим просмотра">
+    <button type="button" class="button primary" id="rel-requirements" aria-pressed="true">Состав требований</button>
+    <button type="button" class="button secondary" id="rel-diff" aria-pressed="false">Изменения и влияние</button>
+  </div>
+  <p class="kn-help" id="rel-explanation"></p>
+  <label id="rel-quality-label" for="rel-quality">Состав набора</label>
+  <select id="rel-quality" class="input" aria-label="Отбор требований">
+    <option value="">Все карточки</option>
+    <option value="ready">Рабочие требования</option>
+    <option value="candidate">Кандидаты — ждут решения эксперта</option>
+    <option value="reference">Справочные записи и рекомендации</option>
+    <option value="duplicate">Точные повторы</option>
+  </select>
+  <label for="rel-profile">Профиль и унаследованные требования</label>
+  <select id="rel-profile" class="input"><option value="">Все профили</option></select>
+  <div id="rel-list" aria-live="polite"></div>
+  <nav class="rel-pages" aria-label="Страницы выпуска"><button type="button" id="rel-prev" class="button secondary">← Назад</button><span id="rel-page"></span><button type="button" id="rel-next" class="button secondary">Далее →</button></nav>
+</div>
+<script defer src="{% static 'knowledge-release.js' %}?v=quality-20260927"></script>
+{% endblock %}

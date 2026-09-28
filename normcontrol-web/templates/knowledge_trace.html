@@ -1,0 +1,22 @@
+{% extends 'base.html' %}{% load static %}
+{% block title %}Нормативные связи{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=917">
+<div id="kn-trace-editor" data-api="/normcontol/api/v2/">
+<div class="page-heading"><div><span class="eyebrow">НОРМАТИВНАЯ БАЗА / ТРАССИРОВКА</span><h1>Связи требований</h1><p>Свяжите требования разных профилей. Матрица комплекта проверяет исполнение этих связей по документам.</p></div><a class="button secondary" href="{% url 'knowledge-expert' %}">Карточки требований →</a></div>
+<div class="panel form-panel"><label for="trace-set">Нормативный набор</label><select id="trace-set"></select><p class="kn-help">Изменения действуют в новых проверках после подготовки и публикации выпуска. Ранее начатые проверки сохраняют свои версии.</p><div id="trace-notice" role="status"></div></div>
+<div class="kn-layout" style="margin-top:18px"><section class="panel form-panel"><div class="kn-card-head"><h2>Нормативные связи</h2><button id="trace-new" class="button secondary" type="button">＋ Новая связь</button></div><div id="trace-links"></div></section>
+<section class="panel form-panel"><h2 id="trace-title">Создать связь</h2><form id="trace-form">{% csrf_token %}
+<label class="kn-field">Поиск карточек для связи<input id="trace-query" placeholder="Смысл требования или пункт"></label><button id="trace-search" type="button" class="button subtle">Найти карточки</button><p id="trace-card-count" class="kn-help"></p>
+<div class="kn-fields"><label class="kn-field">Исходное требование<select id="trace-source" required></select></label><label class="kn-field">Целевое требование<select id="trace-target" required></select></label><label class="kn-field">Нормативное основание связи<select id="trace-basis" required></select></label></div>
+<div id="trace-evidence" class="kn-release-list"></div>
+<button id="trace-suggest" type="button" class="button secondary">✦ Предложить связи с помощью LLM</button><div id="trace-suggestions"></div>
+<div class="kn-fields"><label class="kn-field">Вид исходного документа<input id="trace-source-type" placeholder="Например, ТЗ" required maxlength="100"></label><label class="kn-field">Вид целевого документа<input id="trace-target-type" placeholder="Например, ЧТЗ" required maxlength="100"></label><label class="kn-field">Проверяемая связь<select id="trace-relation"><option value="details">Детализирует</option><option value="preserves">Сохраняет ограничения</option><option value="verifies">Проверяет методом и критерием</option></select></label></div>
+<label class="kn-field">Что должно быть прослежено<textarea id="trace-description" required rows="3" maxlength="4000"></textarea></label>
+<label class="kn-field">Когда применять связь<select id="trace-mode"><option value="custom">Применимость требует уточнения</option><option value="source">К указанному виду исходного документа</option><option value="stage">К виду документа на определённой стадии</option></select></label><label class="kn-field" id="trace-stage-field" hidden>Стадия<input id="trace-stage" maxlength="100" placeholder="Название или код из профиля"></label><details id="trace-advanced"><summary>Расширенные условия</summary><label class="kn-field">Выражение применимости (JSON)<textarea id="trace-condition" required rows="3">{"unknown":"Уточните область и стадию применения связи"}</textarea></label><p class="kn-help">Для всех исходных ТЗ: {"fact":{"name":"document_type","in":["ТЗ"]}}. Стадия без доказательств остаётся вопросом.</p></details>
+<label class="checkbox-label"><input type="checkbox" id="trace-mandatory">Целевой документ обязателен по нормативному основанию</label>
+<label class="kn-field">Обоснование экспертного решения<textarea id="trace-reason" required minlength="20" maxlength="4000" rows="3"></textarea></label>
+<div class="kn-actions"><button class="button primary" type="submit" id="trace-save">Сохранить черновик</button><button type="button" class="button secondary" id="trace-confirm">Подтвердить связь</button><button type="button" class="button subtle" id="trace-reject">Отклонить</button></div>
+<div id="trace-history"></div></form></section></div></div>
+<script defer src="{% static 'knowledge-trace.js' %}?v=917"></script>
+{% endblock %}

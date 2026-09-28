@@ -27,7 +27,8 @@ class WorkerTests(TestCase):
         telemetry='/normcontol/worker/llm/telemetry/'
         sample={'online':True,'processing':True,'uptime_seconds':3723,'cpu_percent':42,'ram_used_mb':24576,'ram_total_mb':65536,
                 'vram_used_mb':12000,'vram_total_mb':16000,'gpu_percent':73,
-                'generation_tps':63.2,'prefill_tps':980.5,'profile':'vision'}
+                'generation_tps':63.2,'prefill_tps':980.5,'profile':'vision','model_label':'Qwen3.8-27B',
+                'timing_source':'knowledge-v2','timing_at':1790570000}
         self.assertEqual(self.client.post(telemetry,{'sample':sample},content_type='application/json').status_code,403)
         for _ in range(125):
             response=self.client.post(telemetry,{'sample':sample},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
@@ -40,6 +41,8 @@ class WorkerTests(TestCase):
         self.assertEqual(len(LLMRuntime.objects.get(pk=1).history),120)
         self.assertNotIn('model_path',runtime.sample)
         self.assertEqual(runtime.sample['uptime_seconds'],3723)
+        self.assertEqual(runtime.sample['model_label'],'Qwen3.8-27B')
+        self.assertEqual(runtime.sample['timing_source'],'knowledge-v2')
         self.assertIs(runtime.sample['processing'],True)
         self.assertIs(LLMRuntime.objects.get(pk=1).history[-1]['processing'],True)
         self.assertEqual(runtime.sample['ram_total_mb'],65536)

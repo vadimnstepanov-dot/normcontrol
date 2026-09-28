@@ -1,0 +1,23 @@
+# Optional CPU job runtime, Linux native or Windows/WSL2. No inbound ports or network.
+# Run: docker compose -f compose.yaml -f compose.documents.yaml --profile documents run --rm document-worker /input/source.docx --output /output
+services:
+  document-worker:
+    profiles: [documents]
+    build:
+      context: ../..
+      dockerfile: deploy/knowledge-v2/document.Dockerfile
+    image: normcontrol/document-understanding:9.1.2
+    init: true
+    network_mode: none
+    cpus: 3
+    mem_limit: 4g
+    pids_limit: 128
+    stop_grace_period: 3m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    volumes:
+      - ${DOCUMENT_INPUT_PATH:?Set document input directory}:/input:ro
+      - ${DOCUMENT_OUTPUT_PATH:?Set separate structural output directory}:/output
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

@@ -27,7 +27,7 @@ def valid_self_registration_name(name):
 
 def common(request):
     worker=WorkerPresence.objects.filter(heartbeat__gte=timezone.now()-timedelta(seconds=120)).order_by('-heartbeat').first()
-    return {'site_name':settings.SITE_NAME,'worker_online':bool(worker),'worker_state':worker.state if worker else 'offline',
+    return {'site_name':settings.SITE_NAME,'knowledge_v2_enabled':settings.KNOWLEDGE_V2_ENABLED,'worker_online':bool(worker),'worker_state':worker.state if worker else 'offline',
         'rag_status':(worker.details or {}).get('rag') if worker else None}
 def audit(request,text):Audit.objects.create(user=request.user,action=text)
 def batches(request):return visible_batches(request.user)
@@ -99,11 +99,44 @@ def dashboard(request):
     if selected is None:
         selected=qs.filter(archived=False,worker_run__isnull=False).prefetch_related('documents').select_related('worker_run').first()
     if selected is None and visible:selected=visible[0]
+    selected_knowledge=None;pending_knowledge=None
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from django.core.exceptions import PermissionDenied
+        from knowledge.models import KnowledgeCheck
+        from knowledge.checks import visible as check_visible
+        labels={'queued':'В очереди','running':'Проверяется','paused':'Приостановлена',
+                'completed':'Завершена','partial':'Завершена с ограничениями','failed':'Ошибка выполнения'}
+        by_batch={}
+        ids={x.pk for x in visible}
+        if selected:ids.add(selected.pk)
+        jobs=KnowledgeCheck.objects.filter(batch_id__in=ids).select_related(
+            'snapshot','experience_release__normative_set__scope').order_by('-created')
+        for job in jobs:
+            if job.batch_id in by_batch:continue
+            try:check_visible(request.user,job)
+            except PermissionDenied:continue
+            job.display_label=labels.get(job.state,job.state)
+            by_batch[job.batch_id]=job
+        for item in visible:
+            item.knowledge_current=by_batch.get(item.pk)
+            if item.knowledge_current and item.knowledge_current.state=='queued' and item.status in ('waiting','preparing','running','paused'):
+                item.knowledge_current.display_label=item.get_status_display()+' · СТО в очереди'
+        # Prefer a visible live v2 check over the legacy batch projection.
+        if not selected_id:
+            current=next((j for j in by_batch.values() if j.state in ('queued','running','paused')),None)
+            if current:selected=qs.filter(pk=current.batch_id).prefetch_related('documents').first()
+        if selected:selected_knowledge=by_batch.get(selected.pk)
+        if selected_knowledge and selected_knowledge.state=='queued':
+            from .models import WorkerRun
+            run=WorkerRun.objects.filter(batch=selected,state__in=('claimed','preparing','running','paused')).first()
+            if run or selected.status=='waiting':
+                pending_knowledge=selected_knowledge;selected_knowledge=None
     expand_batches=bool(query or state or (selected_id and selected and any(item.pk==selected.pk for item in visible[3:])))
     preview=[]
     if selected and hasattr(selected,'worker_run'):
         preview=selected.worker_run.report.get('findings',[])[:60]
     return render(request,'dashboard.html',{'page':'batches','batches':visible,'selected_batch':selected,'preview_findings':preview,
+        'selected_knowledge':selected_knowledge,'pending_knowledge':pending_knowledge,'job':selected_knowledge,'can_manage':bool(selected and can_edit(request.user,selected)),
         'expand_batches':expand_batches,'hidden_batch_count':max(len(visible)-3,0),
         'can_manage_selected':bool(selected and can_edit(request.user,selected)),
         'total':qs.filter(archived=False).count(),'waiting':qs.filter(archived=False,status='waiting').count(),
@@ -133,31 +166,42 @@ def inspect_word(file):
 
 @login_required
 def new_batch(request):
-    form=BatchForm(request.POST or None)
-    if request.method=='POST' and form.is_valid():
-        files=request.FILES.getlist('documents');saved=[]
-        try:
-            if not 1<=len(files)<=20:raise ValueError('Добавьте от 1 до 20 документов.')
-            if sum(f.size for f in files)>100*1024*1024:raise ValueError('Общий размер пакета — не более 100 МБ.')
-            used=Document.objects.values('file').annotate(stored_size=Max('size')).aggregate(total=Sum('stored_size'))['total'] or 0
-            if used+sum(f.size for f in files)>2*1024**3:raise ValueError('Хранилище заполнено. Обратитесь к администратору.')
-            prepared=[(f,inspect_word(f)) for f in files]
-            with transaction.atomic():
-                batch=form.save(commit=False);batch.owner=request.user;batch.status='prepared';batch.queue_position=0;batch.save()
-                for f,meta in prepared:
-                    doc=Document(batch=batch,name=Path(f.name.replace('\\','/')).name[:240],size=f.size,**meta)
-                    doc.file.save(f.name,f,save=False);saved.append(doc.file.path);doc.save()
-                audit(request,'Создан пакет «'+batch.name+'»')
-            messages.success(request,'Документы проверены и сохранены. Проверьте состав пакета и запустите нормоконтроль.');return redirect('batch',pk=batch.pk)
-        except ValueError as e:
-            for path in saved:Path(path).unlink(missing_ok=True)
-            form.add_error(None,str(e))
-    return render(request,'new.html',{'form':form,'page':'batches'})
+    from .intake import UploadForm,launch_uploaded,form_context,launch_response
+    from django.core.exceptions import PermissionDenied
+    data=request.POST if request.method=='POST' else None
+    form=UploadForm(data)
+    failures=(ValueError,OSError)
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from knowledge.launch import NewLaunchForm
+        from knowledge.services import Conflict,NotReady
+        form=NewLaunchForm(data,user=request.user);failures+=(Conflict,NotReady)
+    if request.method=='POST':
+        if form.is_valid():
+            try:
+                batch,created=launch_uploaded(request.user,form.cleaned_data,request.FILES.getlist('documents'))
+                return launch_response(request,batch,created)
+            except PermissionDenied:form.add_error(None,'Доступ к нормативной базе изменился. Обновите страницу и проверьте выбранные наборы.')
+            except failures as e:
+                form.add_error(None,'Не удалось сохранить документы. Повторите попытку.' if isinstance(e,OSError) else str(e))
+        if request.headers.get('X-Requested-With')=='XMLHttpRequest':
+            return JsonResponse({'errors':form.errors.get_json_data()},status=422)
+    return render(request,'launch.html',{'form':form,'page':'batches','can_manage':True,**form_context(form)})
 
 @login_required
 def detail(request,pk):
     batch=get_object_or_404(batches(request).prefetch_related('documents'),pk=pk)
-    return render(request,'batch.html',{'batch':batch,'page':'batches','can_manage':can_edit(request.user,batch)})
+    normative=None
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from knowledge.models import KnowledgeCheck
+        from knowledge.checks import visible as check_visible
+        from django.core.exceptions import PermissionDenied
+        for job in KnowledgeCheck.objects.filter(batch=batch).order_by('-created')[:10]:
+            try:
+                check_visible(request.user,job)
+                job.display_label={'queued':'В очереди','running':'Проверяется','paused':'Приостановлена','completed':'Завершена','partial':'С ограничениями','failed':'Ошибка'}.get(job.state,job.state)
+                normative=job;break
+            except PermissionDenied:continue
+    return render(request,'batch.html',{'batch':batch,'page':'batches','can_manage':can_edit(request.user,batch),'normative_job':normative})
 
 @login_required
 @require_POST
@@ -179,12 +223,15 @@ def add_documents(request,pk):
             source=get_object_or_404(editable_batches(request.user).prefetch_related('documents'),pk=pk)
             if not source.can_rerun or source.archived:raise ValueError('Состояние пакета изменилось. Обновите страницу.')
             if source.reruns.filter(status__in=('prepared','waiting','preparing','running','paused')).exists():raise ValueError('Для этого пакета уже подготовлена или выполняется новая проверка.')
-            revision=Batch.objects.create(owner=source.owner,name=(source.name+' — дополнен')[:160],profile=source.profile,checks=list(source.checks),status='waiting',source_batch=source,fresh_review=True,queue_position=next_queue_position())
+            revision=Batch.objects.create(owner=source.owner,name=(source.name+' — дополнен')[:160],profile=source.profile,checks=list(source.checks),status='prepared' if settings.KNOWLEDGE_V2_ENABLED else 'waiting',source_batch=source,fresh_review=True,queue_position=next_queue_position())
             Document.objects.bulk_create([Document(batch=revision,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline) for d in source.documents.all()])
             for f,meta in prepared:
                 doc=Document(batch=revision,name=Path(f.name.replace('\\','/')).name[:240],size=f.size,**meta)
                 doc.file.save(f.name,f,save=False);saved.append(doc.file.path);doc.save()
             audit(request,'Дополнен пакет '+str(source.pk)+'; создана версия '+str(revision.pk))
+        if settings.KNOWLEDGE_V2_ENABLED:
+            messages.success(request,'Файлы добавлены. Подтвердите нормативы для новой полной проверки с первого этапа. Предыдущий отчёт сохранён.')
+            return redirect('knowledge-check-start',batch_id=revision.pk)
         messages.success(request,'Файлы добавлены. Новая версия пакета поставлена в очередь на полный нормоконтроль с первого этапа.')
         return redirect('batch',pk=revision.pk)
     except ValueError as e:
@@ -200,6 +247,20 @@ def delete_batch(request,pk):
 @require_POST
 def batch_action(request,pk):
     batch=get_object_or_404(editable_batches(request.user),pk=pk);action=request.POST.get('action')
+    if settings.KNOWLEDGE_V2_ENABLED and action in ('pause','resume','cancel'):
+        from knowledge.models import KnowledgeCheck
+        from knowledge.checks import control
+        job=KnowledgeCheck.objects.filter(batch=batch,state__in=('queued','running','paused')).order_by('-created').first()
+        run=getattr(batch,'worker_run',None)
+        if job and (not run or run.state in ('completed','partial','failed','cancelled')):
+            if action=='cancel':
+                if job.state!='paused':control(request.user,job.pk,'pause')
+                batch.status='cancelled';batch.save(update_fields=['status'])
+                messages.success(request,'Запрошена управляемая остановка нормативного этапа. Результаты сохраняются.')
+            else:
+                control(request.user,job.pk,action)
+                messages.success(request,'Команда передана нормативному обработчику.')
+            return redirect('batch',pk=pk)
     if action=='delete':
         if not request.user.is_staff:return HttpResponseForbidden('Удаление доступно только администратору')
         if request.POST.get('confirm_delete')!=str(batch.pk):return HttpResponseForbidden('Подтвердите удаление пакета')
@@ -226,21 +287,25 @@ def batch_action(request,pk):
             editable_batches(request.user).filter(pk=pk).update(status=F('status'))
             batch=get_object_or_404(editable_batches(request.user),pk=pk)
             if not batch.can_rerun:return HttpResponseForbidden('Дождитесь завершения или отмените текущую проверку')
-            repeated=batch.reruns.filter(status__in=('waiting','preparing','running','paused')).first()
+            repeated=batch.reruns.filter(status__in=('prepared','waiting','preparing','running','paused')).first()
             if repeated:
                 messages.info(request,'Повторная проверка уже поставлена в очередь или выполняется.')
-                return redirect('batch',pk=repeated.pk)
+                return redirect('knowledge-check-start',batch_id=repeated.pk) if settings.KNOWLEDGE_V2_ENABLED and repeated.status=='prepared' else redirect('batch',pk=repeated.pk)
             documents=list(batch.documents.all())
             if not documents or any(not d.file.storage.exists(d.file.name) for d in documents):
                 messages.error(request,'Повторная проверка недоступна: исходные документы не найдены.')
                 return redirect('batch',pk=batch.pk)
-            repeated=Batch.objects.create(owner=batch.owner,name=batch.name[:140]+' — повтор',profile=batch.profile,checks=list(batch.checks),status='waiting',source_batch=batch,fresh_review=True,queue_position=next_queue_position())
+            repeated=Batch.objects.create(owner=batch.owner,name=batch.name[:140]+' — повтор',profile=batch.profile,checks=list(batch.checks),status='prepared' if settings.KNOWLEDGE_V2_ENABLED else 'waiting',source_batch=batch,fresh_review=True,queue_position=next_queue_position())
             # Uploaded files are immutable; keep references without copying large files on the VPS.
             Document.objects.bulk_create([Document(batch=repeated,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline) for d in documents])
             audit(request,'Повторный нормоконтроль: '+str(batch.pk)+' → '+str(repeated.pk))
+        if settings.KNOWLEDGE_V2_ENABLED:
+            messages.success(request,'Повтор подготовлен. Подтвердите направления и актуальные нормативы. Предыдущий отчёт сохранён.')
+            return redirect('knowledge-check-start',batch_id=repeated.pk)
         messages.success(request,'Повторный нормоконтроль поставлен в очередь. Будут использованы актуальные настройки и новые ответы LLM. Предыдущий отчёт сохранён.')
         return redirect('batch',pk=repeated.pk)
     if action=='queue' and batch.status in ('prepared','cancelled') and not batch.archived and not hasattr(batch,'worker_run'):
+        if settings.KNOWLEDGE_V2_ENABLED:return redirect('knowledge-check-start',batch_id=batch.pk)
         batch.status='waiting';batch.queue_position=next_queue_position();messages.success(request,'Пакет поставлен в очередь. Анализ начнётся после подключения обработчика LLM.')
     elif action in ('pause','resume') and hasattr(batch,'worker_run'):
         if action=='pause' and batch.status not in ('running','preparing'):return HttpResponseForbidden('Проверка не выполняется')

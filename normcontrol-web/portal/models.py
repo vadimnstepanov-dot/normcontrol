@@ -25,6 +25,15 @@ class Batch(models.Model):
 
 def private_path(instance,filename):return str(instance.batch_id)+'/'+uuid.uuid4().hex+'.docx'
 
+class LaunchReceipt(models.Model):
+    """A retry of one confirmed upload must never create another package."""
+    user=models.ForeignKey(User,on_delete=models.CASCADE)
+    key=models.UUIDField()
+    fingerprint=models.CharField(max_length=64)
+    batch=models.OneToOneField(Batch,on_delete=models.CASCADE)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['user','key'],name='unique_user_launch_key')]
+
 class Document(models.Model):
     batch=models.ForeignKey(Batch,on_delete=models.CASCADE,related_name='documents')
     name=models.CharField(max_length=240)

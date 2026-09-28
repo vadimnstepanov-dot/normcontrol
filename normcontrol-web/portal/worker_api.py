@@ -75,6 +75,9 @@ def llm_telemetry(request):
         'generation_tps':_metric(incoming.get('generation_tps'),100000),
         'prefill_tps':_metric(incoming.get('prefill_tps'),100000),
         'vision':incoming.get('vision') is True,
+        'model_label':str(incoming.get('model_label',''))[:100],
+        'timing_source':str(incoming.get('timing_source',''))[:40],
+        'timing_at':_metric(incoming.get('timing_at'),4102444800),
         'profile':str(incoming.get('profile',''))[:32],
         'note':str(incoming.get('note',''))[:160]}
     with transaction.atomic():
@@ -153,10 +156,21 @@ def claim(request):
     data=body(request);name=str(data.get('worker','local'))[:100]
     with transaction.atomic():
         run=WorkerRun.objects.select_for_update().filter(worker=name,state='claimed',local_id='').select_related('batch').first()
+        from django.conf import settings
+        if not run and settings.KNOWLEDGE_V2_ENABLED:
+            from knowledge.models import Command
+            from knowledge.launch import dependency_ready
+            if Command.objects.filter(kind='review.execute',state='delivering').exists():return JsonResponse({'job':None})
+            for c in Command.objects.filter(kind='review.execute',state='pending',payload__unified_launch=True):
+                if dependency_ready(c):return JsonResponse({'job':None})
         batch=run.batch if run else Batch.objects.select_for_update().filter(status='waiting',worker_run__isnull=True,archived=False).order_by('queue_position','created','pk').first()
         if not batch:return JsonResponse({'job':None})
         if not run:run=WorkerRun.objects.create(batch=batch,worker=name)
-        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':batch.checks,'fresh_review':batch.fresh_review,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
+        checks=batch.checks
+        if settings.KNOWLEDGE_V2_ENABLED:
+            # V2 owns STO: never silently substitute the legacy catalog.
+            checks=[x for x in checks if x!='sto']
+        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
 
 @worker
 @require_POST
@@ -191,6 +205,10 @@ def update(request,lease):
             if (run.control=='pause' and state=='paused') or (run.control=='resume' and state in ('running','preparing')):run.control=''
             run.save(update_fields=changed)
             if run.batch.status!='cancelled':Batch.objects.filter(pk=run.batch_id).update(status=state)
+            from django.conf import settings
+            if settings.KNOWLEDGE_V2_ENABLED:
+                from knowledge.launch import reconcile
+                reconcile(run.batch)
         wake_at=(run.snapshot or {}).get('_frontend_wake_at',0)
         wake=run.state in ('preparing','running') and isinstance(wake_at,(int,float)) and timezone.now().timestamp()-wake_at<720
         return JsonResponse({'accepted_sequence':run.sequence,'cancel':run.batch.status=='cancelled','control':run.control,'wake':wake,'feedback':[{'id':f.id,'finding_id':f.finding_id,'comment':f.comment} for f in run.batch.review_feedback.filter(state='pending')]})

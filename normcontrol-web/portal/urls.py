@@ -23,3 +23,18 @@ def legacy(request,rest=''):
     response=HttpResponse(status=308);response['Location']=location;return response
 
 urlpatterns=[path('normcontol/',include(routes)),path('LLM/',legacy),path('LLM/<path:rest>',legacy)]
+from django.conf import settings
+if settings.KNOWLEDGE_V2_ENABLED:
+    from knowledge.trace_views import workspace as trace_workspace
+    urlpatterns.append(path('normcontol/knowledge/trace/',trace_workspace,name='knowledge-trace'))
+    from knowledge.profile_editor import editor as profile_editor
+    from knowledge.workspace import workspace as knowledge_workspace
+    from knowledge.expert_views import workspace as expert_workspace, release_workspace
+    urlpatterns.append(path('normcontol/knowledge/expert/',expert_workspace,name='knowledge-expert'))
+    urlpatterns.append(path('normcontol/knowledge/releases/<uuid:release_id>/',release_workspace,name='knowledge-release'))
+    from knowledge.check_ui import start as knowledge_check_start, monitor as knowledge_check_monitor
+    urlpatterns.append(path('normcontol/knowledge/',knowledge_workspace,name='knowledge-workspace'))
+    urlpatterns.append(path('normcontol/knowledge/check/<uuid:batch_id>/',knowledge_check_start,name='knowledge-check-start'))
+    urlpatterns.append(path('normcontol/knowledge/checks/<uuid:job_id>/',knowledge_check_monitor,name='knowledge-check-monitor'))
+    urlpatterns.append(path('normcontol/knowledge/profiles/',profile_editor,name='knowledge-profiles'))
+    urlpatterns.append(path('normcontol/api/v2/',include('knowledge.urls')))

@@ -1,0 +1,37 @@
+{% extends 'base.html' %}{% load static %}
+{% block title %}Требования · Рабочее место эксперта{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{% static 'knowledge-expert.css' %}?v=quality-20260927">
+<div id="expert-app" data-api="/normcontol/api/v2/">
+  <div class="page-heading ex-heading"><div><a href="{% url 'knowledge-workspace' %}" class="ex-back">← Нормативная база</a><span class="eyebrow">ТРЕБОВАНИЯ И ИХ ОСНОВАНИЯ</span><h1>Рабочее место эксперта</h1><p>Сопоставляйте требование с источником. Решение эксперта сохраняется для выбранной версии.</p></div><a class="button secondary" href="{% url 'knowledge-profiles' %}">Настроить профили</a></div>
+  <div id="ex-notice" role="status" aria-live="polite" hidden></div>
+  <form id="ex-filters" class="panel ex-filters">
+    <label>Область<select id="ex-scope" required></select></label>
+    <label class="ex-search">Найти требование<input id="ex-search" type="search" maxlength="300" placeholder="Формулировка, источник или пункт"></label>
+    <label>Тип<select id="ex-type"><option value="">Все типы</option><option value="requirement">Обязательное требование</option><option value="recommendation">Рекомендация</option><option value="permission">Разрешение</option><option value="assumption">Допущение</option><option value="constraint">Ограничение</option><option value="definition">Термин / определение</option></select></label>
+    <label>Решение эксперта<select id="ex-status"><option value="">Все действующие</option><option value="unreviewed">Ожидают решения</option><option value="confirmed">Подтверждены</option><option value="rejected">Отклонены</option><option value="superseded">Разделены / объединены</option></select></label>
+    <button class="button secondary" type="submit">Найти</button>
+  </form>
+  <p id="ex-analysis" class="ex-muted"></p>
+  <div class="ex-workbench">
+    <aside class="panel ex-sidebar" aria-label="Навигация по требованиям">
+      <details open class="ex-profiles"><summary>Профили документов</summary><nav id="ex-tree" aria-label="Дерево профилей"></nav></details>
+      <div class="ex-list-head"><h2>Требования <span id="ex-count"></span></h2><button id="ex-glossary" class="button subtle" type="button" aria-pressed="false">Глоссарий</button></div>
+      <label class="ex-section-label">Пункт / раздел<select id="ex-section"><option value="">Весь профиль</option></select></label>
+      <div id="ex-list" aria-label="Список требований"></div>
+      <div class="ex-pagination"><button id="ex-prev" type="button" class="button secondary" aria-label="Предыдущая страница">←</button><span id="ex-page"></span><button id="ex-next" type="button" class="button secondary" aria-label="Следующая страница">→</button></div>
+      <div class="ex-merge"><button id="ex-merge" class="button secondary" type="button" disabled>Объединить выбранные</button><small>В пределах одного источника, профиля и типа.</small></div>
+    </aside>
+    <div class="ex-review-area">
+      <div class="ex-mobile-tabs" role="group" aria-label="Панели проверки"><button type="button" data-tab="card" aria-pressed="true">Карточка</button><button type="button" data-tab="source" aria-pressed="false">Источник</button></div>
+      <div id="ex-empty" class="panel ex-empty"><span aria-hidden="true">▤</span><h2>Выберите требование</h2><p>Слева будет точная цитата из нормативного документа, справа — поля карточки и решение эксперта.</p></div>
+      <div id="ex-panes" class="ex-panes" hidden>
+        <section class="panel ex-source" aria-labelledby="ex-source-title"><div class="ex-pane-head"><span class="eyebrow">ПЕРВОИСТОЧНИК</span><h2 id="ex-source-title">Основание требования</h2></div><div id="ex-evidence"></div></section>
+        <section class="panel ex-card" aria-labelledby="ex-card-title"><div id="ex-card-content"></div></section>
+      </div>
+    </div>
+  </div>
+  <dialog id="ex-dialog" aria-labelledby="ex-dialog-title"><form id="ex-action-form"><div class="ex-dialog-head"><h2 id="ex-dialog-title">Решение эксперта</h2><button type="button" class="button subtle" id="ex-dialog-close" aria-label="Закрыть диалог">✕</button></div><div id="ex-dialog-body"></div><label>Обоснование<textarea id="ex-reason" required minlength="5" maxlength="2000" rows="3" placeholder="Что проверено и почему принято это решение"></textarea></label><p class="ex-muted">Подтверждение относится только к этой версии. Изменение текста потребует нового решения.</p><div class="ex-actions"><button type="button" class="button secondary" id="ex-dialog-cancel">Отмена</button><button type="submit" class="button primary" id="ex-action-submit">Сохранить решение</button></div></form></dialog>
+  <form hidden>{% csrf_token %}</form>
+</div><script defer src="{% static 'knowledge-expert.js' %}?v=quality-20260927"></script>
+{% endblock %}

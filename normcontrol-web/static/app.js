@@ -8,7 +8,7 @@ if(llmPanel){
   const setText=(id,value)=>{const element=document.getElementById(id);if(element)element.textContent=value;};
   const metric=value=>typeof value==='number'?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(value):'—';
   const duration=value=>{if(typeof value!=='number')return '—';const seconds=Math.max(0,Math.floor(value)),days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.floor(seconds%3600/60);return days?`${days} д ${hours} ч`:`${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;};
-  function tickUptime(){const elapsed=uptimeBase===null?null:uptimeBase+(Date.now()-uptimeAt)/1000;setText('llm-online-uptime',elapsed===null?'—':duration(elapsed));setText('llm-uptime-detail',elapsed===null?'—':`${duration(elapsed)} (${Math.floor(elapsed/60)} мин)`);const model=llmPanel.querySelector('[data-llm-chart="online"]');if(model)model.title=elapsed===null?'Модель выключена или статус недоступен':`Модель включена · работает ${duration(elapsed)}`;}
+  function tickUptime(){const elapsed=uptimeBase===null?null:uptimeBase+(Date.now()-uptimeAt)/1000;setText('llm-online-uptime',elapsed===null?'—':duration(elapsed));setText('llm-uptime-detail',elapsed===null?'—':`${duration(elapsed)} (${Math.floor(elapsed/60)} мин)`);const model=llmPanel.querySelector('[data-llm-chart="online"]'),name=document.getElementById('llm-model-label')?.textContent||'Модель';if(model)model.title=elapsed===null?`${name} · выключена или статус недоступен`:`${name} · включена · работает ${duration(elapsed)}`;}
   const gauge=(key,value,color)=>{const button=llmPanel.querySelector(`[data-llm-chart="${key}"]`);if(!button)return;button.style.setProperty('--gauge',String(Math.max(0,Math.min(100,value||0))));if(color)button.style.setProperty('--gauge-color',color);};
   function closeChart(){opened='';draw();llmPanel.querySelectorAll('[data-llm-chart]').forEach(item=>item.setAttribute('aria-expanded','false'));}
   const svgNode=(svg,tag,attributes,value)=>{const element=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,item] of Object.entries(attributes))element.setAttribute(key,String(item));if(value!==undefined)element.textContent=value;svg.append(element);return element;};
@@ -68,6 +68,7 @@ if(llmPanel){
       const response=await fetch(llmPanel.dataset.statusUrl,{cache:'no-store'});if(!response.ok)throw Error('status');
       const data=await response.json(),sample=data.sample||{};history=data.history||[];
       const on=!!(data.telemetry_fresh&&sample.online);
+      setText('llm-model-label',sample.model_label||'Модель');
       setText(fields.online,data.telemetry_fresh?(on?'ON':'OFF'):'—');
       const statusCard=llmPanel.querySelector('[data-llm-chart=online]');statusCard.classList.toggle('is-online',!!on);statusCard.classList.toggle('is-offline',!on);
       const vramPercent=sample.vram_total_mb?sample.vram_used_mb/sample.vram_total_mb*100:null;
@@ -91,7 +92,8 @@ if(llmPanel){
       gauge('ram_used_mb',ramPercent,ramPercent>90?'var(--red)':ramPercent>80?'var(--amber)':'var(--green)');
       for(const [key,color] of [['generation_tps','var(--green)'],['prefill_tps','var(--accent)']]){
         const peak=Math.max(0,...history.map(point=>Number(point[key])||0));gauge(key,peak?Number(sample[key]||0)/peak*100:0,color);
-        llmPanel.querySelector(`[data-llm-chart="${key}"]`).title=`${labels[key]}; дуга показывает долю от максимума за последние 120 минут`;
+        const measured=typeof sample.timing_at==='number'?` · запрос завершён ${clock(sample.timing_at*1000)}`:'';
+        llmPanel.querySelector(`[data-llm-chart="${key}"]`).title=`${labels[key]}${measured}; дуга показывает долю от максимума за последние 120 минут`;
       }
       const latest=history.at(-1);setText('llm-sampled-at',latest&&data.telemetry_fresh?'Замер '+new Date(latest.at).toLocaleTimeString('ru'):'Нет свежего замера');
       const command=data.command||{};pending=command.state==='pending';
@@ -287,7 +289,7 @@ if(reviewProgress){
 document.querySelectorAll('[data-reveal]').forEach(button=>button.addEventListener('click',()=>{const input=document.getElementById(button.dataset.reveal);const show=input.type==='password';input.type=show?'text':'password';button.textContent=show?'Скрыть':'Показать';button.setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');}));
 
 const input=document.getElementById('documents');
-if(input){let selected=[];const list=document.getElementById('file-list'),error=document.getElementById('upload-error'),drop=document.getElementById('dropzone'),form=document.getElementById('batch-form');
+if(input&&document.getElementById('batch-form')){let selected=[];const list=document.getElementById('file-list'),error=document.getElementById('upload-error'),drop=document.getElementById('dropzone'),form=document.getElementById('batch-form');
   const render=()=>{list.replaceChildren();const dt=new DataTransfer();selected.forEach((file,index)=>{dt.items.add(file);const row=node('div','file-item'),label=node('span','',file.name),size=node('small','',(file.size/1024/1024).toFixed(1)+' МБ'),remove=node('button','', 'Удалить');remove.type='button';remove.setAttribute('aria-label','Удалить '+file.name);remove.onclick=()=>{selected.splice(index,1);render();};row.append(label,size,remove);list.append(row);});input.files=dt.files;};
   const add=files=>{error.textContent='';for(const file of files){if(!/\.docx?$/i.test(file.name)){error.textContent='Добавляйте документы Word .doc или .docx.';continue;}if(file.size>50*1024*1024){error.textContent='Файл '+file.name+' превышает 50 МБ.';continue;}if(selected.length>=20||selected.reduce((sum,item)=>sum+item.size,0)+file.size>100*1024*1024){error.textContent='Лимит пакета: 20 документов и 100 МБ.';break;}if(!selected.some(item=>item.name===file.name&&item.size===file.size))selected.push(file);}render();};
   input.addEventListener('change',()=>add(Array.from(input.files)));['dragenter','dragover'].forEach(name=>drop.addEventListener(name,event=>{event.preventDefault();drop.classList.add('drag-over');}));['dragleave','drop'].forEach(name=>drop.addEventListener(name,event=>{event.preventDefault();drop.classList.remove('drag-over');}));drop.addEventListener('drop',event=>add(Array.from(event.dataTransfer.files)));form.addEventListener('submit',event=>{if(!selected.length){event.preventDefault();error.textContent='Добавьте хотя бы один документ.';return;}const button=document.getElementById('save-batch');button.disabled=true;button.textContent='Загружаем документы…';});

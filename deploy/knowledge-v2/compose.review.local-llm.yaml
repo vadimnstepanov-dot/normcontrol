@@ -1,0 +1,7 @@
+# Use only with compose.review.yaml and an explicitly trusted HTTPS gateway.
+services:
+  review-worker:
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/normcontrol-gateway.crt
+    volumes:
+      - ${KNOWLEDGE_GATEWAY_CERT_PATH:?Set the trusted local LLM gateway certificate path}:/etc/ssl/certs/normcontrol-gateway.crt:ro
