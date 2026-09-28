@@ -1,0 +1,9 @@
+# Optional: use only with a trusted gateway implementing POST /model/profile.
+# Activate after all reviews pinned to the previous engine have completed.
+services:
+  knowledge-worker:
+    environment:
+      KNOWLEDGE_LLM_PROFILE_CONTROL: "1"
+  review-worker:
+    environment:
+      KNOWLEDGE_LLM_PROFILE_CONTROL: "1"

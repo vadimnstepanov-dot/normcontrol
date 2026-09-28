@@ -23,7 +23,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
     if payload.get('experience_release_id'):
         manifest,_=release_records(store,payload['experience_release_id'],authorize)
         if manifest['set_id']!=payload['experience_set_id']:raise Conflict('Experience release changed')
-    model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=24576,output_tokens=2048,timeout=300)
+    model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=24576,output_tokens=2048,timeout=300,store=store)
     with tempfile.TemporaryDirectory(prefix='knowledge-check-') as temporary:
         paths=[]
         for index,declared in enumerate(payload['documents']):
@@ -42,6 +42,10 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             if size!=declared['size'] or digest.hexdigest()!=declared['sha256']:raise Conflict('Document revision changed')
             paths.append(path)
         docs=corpus(paths)
+        visual_enabled=payload.get('visual_version')=='visual-tail-v1'
+        if visual_enabled:
+            from .visual_tail import prepare
+            prepare(paths,docs,store)
         if len(docs)!=len(paths):raise ValueError('Corpus count changed')
         for doc,declared in zip(docs,payload['documents']):doc['name']=declared['name']
         trace_enabled=payload.get('trace_version')=='package-trace-9.1.6'
@@ -104,8 +108,14 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         trace_enabled=payload.get('trace_version')=='package-trace-9.1.6'
         from .trace import links_for,plan as trace_plan,run as trace_run
         trace_links=links_for(store,[r['release_id'] for r in selected],authorize) if trace_enabled else []
-        trace_batches,_=trace_plan(trace_links,docs,facts,verify_fact,model) if trace_enabled else ([],[])
+        from .model_queue import model_turn
+        from .model_profile import ensure
+        with model_turn(store,model):
+            ensure(model,'text')
+            trace_batches,_=trace_plan(trace_links,docs,facts,verify_fact,model) if trace_enabled else ([],[])
         trace_total=len(trace_batches)
+        visual_total=0;visual_result=None;visual_batches=[];visual_unplanned=[]
+        phase='text'
         progress_floor=0
         def progress(task_id,completed,total,decisions=None):
             completed=max(progress_floor,completed)
@@ -114,14 +124,29 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                                     for e in d.get('evidence',[])[:2]])
                      for d in (decisions or []) if d.get('outcome')=='violated'][:5]
             response=bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],
-                job_id=payload['job_id'],progress=dict(task_id=task_id,completed=completed,total=total+trace_total,
-                    percent=round(completed/max(1,total+trace_total)*100,1),
-                    eta_seconds=(round((time.monotonic()-started)/(completed-previous_completed)*max(0,total+trace_total-completed)) if completed>previous_completed else previous_eta),
-                    preview=preview)))
+                job_id=payload['job_id'],progress=dict(task_id=task_id,completed=completed,total=total+trace_total+visual_total,
+                    percent=round(completed/max(1,total+trace_total+visual_total)*100,1),
+                    eta_seconds=(round((time.monotonic()-started)/(completed-previous_completed)*max(0,total+trace_total+visual_total-completed)) if completed>previous_completed else previous_eta),
+                    preview=preview,**({'stage':phase,'visual_total':visual_total} if visual_enabled else {}))))
             return response.get('pause_requested') is True or bridge.stop_event.is_set()
         runner=ReviewRunner(store,model,authorize,owner=payload['actor_id'],experience_selector=selector,on_checkpoint=progress)
-        task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
-            experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [])
+        from .model_queue import model_turn
+        with model_turn(store,model):
+            from .model_profile import ensure
+            ensure(model,'text')
+            task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
+                experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [])
+            if visual_enabled:
+                from .visual_tail import plan
+                with store.connection() as db:review_payload=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
+                visual_batches,visual_unplanned=plan(review_payload['rows'],docs,model)
+                visual_total=len(visual_batches)
+                if visual_batches:
+                    visual_task=store.enqueue('visual.run','visual.run:'+payload['job_id'],dict(job_id=payload['job_id'],batches=visual_batches,
+                        snapshot_id=review_payload['snapshot_id'],model_signature=model.signature))
+                    with store.connection() as db:old_visual=json.loads(db.execute('SELECT cursor FROM tasks WHERE id=?',(visual_task,)).fetchone()[0])
+                    visual_done=len(old_visual.get('results',{}))+len(old_visual.get('failures',{}))
+                    if visual_done:progress_floor=len(review_payload['batches'])+trace_total+visual_done
         previous=runner.report(task_id)
         # Initial token planning is a finished preparation stage, not recurring
         # per-task latency. A resume estimates only newly completed work.
@@ -130,7 +155,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             with store.connection() as db:
                 old=db.execute("SELECT cursor FROM tasks WHERE operation='trace.run' AND json_extract(payload,'$.job_id')=? ORDER BY created DESC LIMIT 1",(payload['job_id'],)).fetchone()
             if old:
-                cursor=json.loads(old['cursor']);progress_floor=previous['progress']['completed']+len(cursor.get('results',{}))+len(cursor.get('failures',{}))
+                cursor=json.loads(old['cursor']);progress_floor=max(progress_floor,previous['progress']['completed']+len(cursor.get('results',{}))+len(cursor.get('failures',{})))
         # A resumed command must report the durable cursor, not rewind portal progress.
         runner.pause(task_id,False)
         if progress(task_id,previous['progress']['completed'],previous['progress']['total']):
@@ -146,13 +171,29 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         else:state='partial'
         if state=='completed' and report.get('normative_selection'):state='partial'
         if trace_enabled and state!='paused':
+            phase='trace'
             n=report['progress']['completed'];norm_total=report['progress']['total']
             def trace_progress(done,total):return progress(task_id,n+done,norm_total)
             trace_report=trace_run(store,payload['job_id'],trace_links,docs,facts,verify_fact,model,authorize,trace_progress)
             if trace_report['state']=='paused':state='paused'
             elif trace_report['counts'].get('unknown') or trace_report['errors']:state='partial'
             if state!='paused':progress(task_id,n+trace_total,norm_total)
+        if visual_enabled and state!='paused' and visual_batches:
+            phase='vision'
+            from .visual_tail import run
+            base_done=report['progress']['completed']+trace_total
+            norm_total=report['progress']['total']
+            # The text/trace stages are durable before projector activation.
+            visual_result=run(store,visual_task,model,authorize,
+                lambda done,total,result:progress(task_id,base_done+done,norm_total,(result or {}).get('decisions',[])),cancel=bridge.stop_event.is_set)
+            if visual_result['state']=='paused':state='paused'
+            elif visual_result.get('failures') or visual_unplanned:state='partial'
+        if visual_enabled and visual_unplanned and state!='paused':state='partial'
         findings=[] if state=='paused' else [d for d in report['decisions'] if d['state'] in ('violated','unknown')]
+        if visual_result and state!='paused':
+            from .visual_tail import findings as visual_findings
+            visual_rows=visual_findings(visual_batches,visual_result);findings.extend(visual_rows)
+            if visual_rows:state='partial' if state=='completed' else state
         if trace_report and state!='paused':findings.extend(dict(r,category='traceability') for r in trace_report['rows'])
         hashes=[]
         for i in range(0,len(findings),10):
@@ -168,13 +209,23 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             done=report['progress']['completed']+len(trace_cursor.get('results',{}))+len(trace_cursor.get('failures',{}))
             total=report['progress']['total']+trace_total
             final_progress.update(completed=done,total=total,percent=round(100*done/max(1,total),1),eta_seconds=0 if state!='paused' else None)
+        if visual_enabled:
+            done=final_progress['completed']+len((visual_result or {}).get('results',{}))+len((visual_result or {}).get('failures',{}))
+            total=report['progress']['total']+trace_total+visual_total
+            final_progress.update(completed=done,total=total,percent=round(100*done/max(1,total),1),eta_seconds=0 if state!='paused' else None,
+                stage='vision' if state=='paused' and phase=='vision' else phase,visual_total=visual_total)
+        visual_errors={'visual:'+k:v for k,v in (visual_result or {}).get('failures',{}).items()}
         result=dict(kind='review.execute.done',set_id=payload['set_id'],job_id=payload['job_id'],task_id=task_id,
             state=state,finding_count=len(findings),findings_digest=checksum(hashes),
             coverage=report['normative_coverage'],violation_count=report['violation_count']+(trace_report or {}).get('counts',{}).get('violated',0),
-            progress=final_progress,errors=dict(report['errors'],**{'trace:'+k:v for k,v in (trace_report or {}).get('errors',{}).items()}),
-            limitations=report['limitations']+(trace_report or {}).get('limitations',[]),
+            progress=final_progress,errors=dict(report['errors'],**{'trace:'+k:v for k,v in (trace_report or {}).get('errors',{}).items()},**visual_errors),
+            limitations=report['limitations']+(trace_report or {}).get('limitations',[])+
+                ([str(x['reason']) for x in visual_unplanned]+['Visual findings are preliminary source-linked observations, not expert-approved violations.'] if visual_enabled and (visual_batches or visual_unplanned) else []),
             normative_selection=report.get('normative_selection',[]),
             traceability={k:v for k,v in (trace_report or {}).items() if k!='rows'},
             snapshot=report['snapshot'],experience_used=report['experience_used'],
-            planning=report.get('planning',{}),performance=report.get('performance',{}))
+            planning=dict(report.get('planning',{}),**({'visual_tasks':visual_total,'order':['text','trace','vision'],
+                'visual_assets':sum(len(d.get('visual_inventory',{}).get('items',[])) for d in docs),'visual_unplanned':visual_unplanned} if visual_enabled else {})),
+            visuals=dict(enabled=visual_enabled,total=visual_total,completed=len((visual_result or {}).get('results',{})),
+                errors=len(visual_errors),unplanned=visual_unplanned,model_calls=[c for v in (visual_result or {}).get('results',{}).values() for c in v.get('model_calls',[])]),performance=report.get('performance',{}))
         return store.remember_result(claim['command_id'],'review.execute',payload,result)

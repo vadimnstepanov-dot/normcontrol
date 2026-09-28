@@ -76,15 +76,17 @@ def monitor(request,job_id):
                 obligation=decision['obligation'];citation=obligation.get('atom',{}).get('citation',{})
                 evidence=[dict(e,address=e.get('location') or e.get('locator'))
                     for part in decision.get('partition_decisions',[]) for e in part.get('evidence',[])]
+                visual=decision.get('visual_evidence')
+                visual_note=('\nИзображение (предварительно): '+visual.get('observation','')+'; вхождения: '+', '.join(visual.get('occurrences',[]))+'; область: '+str(visual.get('bbox',[]))) if visual else ''
                 findings.append(dict(id=obligation['id'],status={'violated':'confirmed','checked':'checked','not_applicable':'not_applicable'}.get(decision['state'],'candidate' if decision.get('preliminary_violation') else 'question'),
                     category='СТО',issue=f"Требование {citation.get('locator','—')}: {obligation.get('atom',{}).get('description') or obligation.get('atom',{}).get('object','')}",
-                    explanation=decision_explanation(decision),evidence=evidence,suggestion='',
+                    explanation=decision_explanation(decision)+visual_note,evidence=evidence,suggestion='',
                     source={'document_name':obligation.get('source',{}).get('filename',''),
                             'clause':citation.get('locator',''),'source_quote':citation.get('quote','')}))
         run=SimpleNamespace(report={'documents':documents},snapshot={})
         batch=SimpleNamespace(name=job.batch.name,get_status_display=lambda:'Завершена' if job.state=='completed' else 'С ограничениями')
         trace_errors=job.summary.get('traceability',{}).get('errors',{})
-        errors=[dict(id=k,stage='links' if k.removeprefix('trace:') in trace_errors else 'sto',stage_label='Междокументная логика' if k.removeprefix('trace:') in trace_errors else 'Требования СТО',state='failed',attempts=1,error=v.get('error','Причина неизвестна'))
+        errors=[dict(id=k,stage='vision' if k.startswith('visual:') else 'links' if k.removeprefix('trace:') in trace_errors else 'sto',stage_label='Изображения' if k.startswith('visual:') else 'Междокументная логика' if k.removeprefix('trace:') in trace_errors else 'Требования СТО',state='failed',attempts=1,error=v.get('error','Причина неизвестна'))
                 for k,v in job.summary.get('errors',{}).items()]
         limitations=job.summary.get('limitations',[])
         selected='; '.join(f"{r['set_id']} / выпуск {r['release_id']}" for r in job.snapshot.data['releases'])

@@ -29,8 +29,8 @@
 {% if selected_knowledge %}
 <link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=915">
 <div id="current-review"><h2>{{ selected_batch.name }}</h2>{% include 'knowledge_check_body.html' %}</div>
-<script defer src="{% static 'knowledge-matrix.js' %}?v=917"></script>
-<script defer src="{% static 'knowledge-check.js' %}?v=917-dashboard"></script>
+<script defer src="{% static 'knowledge-matrix.js' %}?v=20260928-visual-tail"></script>
+<script defer src="{% static 'knowledge-check.js' %}?v=20260928-visual-tail-dashboard"></script>
 {% else %}
 <section class="panel live-workspace" id="current-review"><div id="review-progress" data-url="{% url 'batch-status' selected_batch.pk %}" data-wake-url="{% url 'batch-wake' selected_batch.pk %}" data-can-manage="{% if can_manage_selected %}1{% else %}0{% endif %}" data-feedback-url="{% url 'batch-feedback' selected_batch.pk %}" data-disposition-url="{% url 'finding-disposition' selected_batch.pk '__FINDING__' %}">
 <div class="panel-heading live-heading"><div><span class="eyebrow">ТЕКУЩАЯ ПРОВЕРКА</span><h2>{{ selected_batch.name }}</h2><p class="muted">{% for doc in selected_batch.documents.all %}{% if not forloop.first %} · {% endif %}{{ doc.name }}{% endfor %}</p></div><span class="badge {{ selected_batch.status }}" id="review-state">{{ selected_batch.get_status_display }}</span></div>

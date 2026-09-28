@@ -11,17 +11,24 @@ from .review_wire import VERSION as WIRE_VERSION, POLICY as WIRE_POLICY, payload
 
 
 class LlamaClient:
-    def __init__(self, endpoint, context=24576, output_tokens=2048, timeout=300):
+    def __init__(self, endpoint, context=24576, output_tokens=2048, timeout=300,store=None):
         parsed = urllib.parse.urlsplit(endpoint)
         if parsed.scheme not in ('https', 'http') or parsed.username or parsed.password:
             raise ValueError('Explicit trusted HTTP(S) model endpoint required')
         self.endpoint = endpoint.rstrip('/')
         self.output_tokens, self.timeout = output_tokens, timeout
-        props = self.http('/props', timeout=15)
-        self.model = self.http('/v1/models', timeout=15)['data'][0]['id']
-        self.context = min(int(context), int(props['default_generation_settings']['n_ctx']))
-        if not 256 <= output_tokens < self.context - 1024: raise ValueError('Output/context budget')
-        self.signature = checksum(dict(props=props, model=self.model, temperature=0, thinking=False,wire_version=WIRE_VERSION))
+        self.store=store
+        from .model_profile import enabled,ensure
+        from contextlib import nullcontext
+        from .model_queue import model_turn
+        if enabled() and store is None:raise RuntimeError('Managed model profiles require the shared store')
+        with model_turn(store,self) if enabled() else nullcontext():
+            if enabled():ensure(self,'text')
+            props = self.http('/props', timeout=15)
+            self.model = self.http('/v1/models', timeout=15)['data'][0]['id']
+            self.context = min(int(context), int(props['default_generation_settings']['n_ctx']))
+            if not 256 <= output_tokens < self.context - 1024: raise ValueError('Output/context budget')
+            self.signature = checksum(dict(props=props, model=self.model, temperature=0, thinking=False,wire_version=WIRE_VERSION))
         self._counts = {}
 
     def http(self, path, value=None, timeout=None):
@@ -87,6 +94,8 @@ class LlamaClient:
         return self._counts[key]
 
     def complete(self, payload):
+        from .model_profile import ensure
+        ensure(self,'text')
         # Detect restarts/model replacement before every request, not only at launch.
         props = self.http('/props', timeout=15)
         model = self.http('/v1/models', timeout=15)['data'][0]['id']

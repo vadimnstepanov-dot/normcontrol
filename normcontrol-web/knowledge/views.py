@@ -367,7 +367,7 @@ def worker_claim(request):
     if d['protocol_version']!=2 or not isinstance(d['capabilities'],list) or not all(isinstance(x,str) for x in d['capabilities']):raise ValueError('Protocol')
     if not set(d['capabilities'])<=s.PERMISSION.keys():raise ValueError('Capabilities')
     features=d.get('features',[])
-    if not isinstance(features,list) or any(x!='context-budget-v3' for x in features):raise ValueError('Worker features')
+    if not isinstance(features,list) or any(x not in ('context-budget-v3','context-budget-v4') for x in features):raise ValueError('Worker features')
     c=s.claim(settings.KNOWLEDGE_WORKER_ID,d['capabilities'],features)
     return JsonResponse({'command':c})
 

@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import time
 import uuid
 import os
+import threading
 from .store import checksum
 
 
@@ -29,6 +30,20 @@ def model_turn(store,client):
                     break
             if time.monotonic()>=deadline:raise TimeoutError('Model turn queue timed out; retry from durable cursor')
             time.sleep(.2)
-        yield
+        previous=getattr(client,'_model_ticket',None);client._model_ticket=ticket
+        stop=threading.Event();lost=threading.Event()
+        def renew():
+            while not stop.wait(10):
+                try:
+                    with store.connection() as db:
+                        changed=db.execute("UPDATE model_tickets SET expires=? WHERE id=? AND state='running' AND expires>?",(time.time()+timeout+60,ticket,time.time())).rowcount
+                    if changed!=1:lost.set();return
+                except Exception:lost.set();return
+        thread=threading.Thread(target=renew,daemon=True);thread.start()
+        try:
+            yield ticket
+            if lost.is_set():raise RuntimeError('Exclusive model turn lost')
+        finally:
+            stop.set();thread.join(timeout=2);client._model_ticket=previous
     finally:
         with store.connection() as db:db.execute('DELETE FROM model_tickets WHERE id=?',(ticket,))

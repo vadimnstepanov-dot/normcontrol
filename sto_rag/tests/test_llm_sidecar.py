@@ -17,6 +17,25 @@ from nc5.store import Store
 
 
 class SidecarTests(unittest.TestCase):
+    def test_profile_switch_refuses_busy_slot_without_stopping(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            store=Store(Path(folder)/'review.sqlite3');process=Mock();process.cmdline.return_value=['llama-server']
+            with patch.object(llm_sidecar,'Store',return_value=store),patch.object(llm_sidecar,'DATA',Path(folder)),patch.object(llm_sidecar,'backend',return_value=process),patch.object(llm_sidecar,'slot_activity',return_value=True),patch.object(llm_sidecar,'stop_backend') as stop:
+                with self.assertRaises(llm_sidecar.BusyError):llm_sidecar.ensure_profile('vision')
+                stop.assert_not_called()
+
+    def test_profile_switch_is_graceful_and_checks_requested_profile(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            store=Store(Path(folder)/'review.sqlite3');text=Mock();vision=Mock()
+            text.cmdline.return_value=['llama-server'];vision.cmdline.return_value=['llama-server','--mmproj','projector.gguf']
+            active=[text]
+            def start(profile):self.assertEqual(profile,'vision');active[0]=vision
+            with patch.object(llm_sidecar,'Store',return_value=store),patch.object(llm_sidecar,'DATA',Path(folder)),patch.object(llm_sidecar,'backend',side_effect=lambda:active[0]),patch.object(llm_sidecar,'ready',return_value=True),patch.object(llm_sidecar,'slot_activity',return_value=False),patch.object(llm_sidecar,'stop_backend') as stop,patch.object(llm_sidecar,'start_backend',side_effect=start):
+                result=llm_sidecar.ensure_profile('vision');self.assertTrue(result['changed']);stop.assert_called_once()
+                result=llm_sidecar.ensure_profile('vision');self.assertFalse(result['changed']);stop.assert_called_once()
+
     def test_model_label_stops_at_parameter_count_without_exposing_paths(self):
         from unittest.mock import Mock
         for filename,wanted in [('Qwen3.8-27B-UD-Q4_K_S.gguf','Qwen3.8-27B'),

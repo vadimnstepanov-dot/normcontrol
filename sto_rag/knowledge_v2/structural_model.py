@@ -49,20 +49,22 @@ class StructuralClient:
             messages=[dict(role='system',content=policy),dict(role='user',content=content)])
         headers={'Content-Type':'application/json'}
         if self.api_key:headers['Authorization']='Bearer '+self.api_key
-        if self.measure_context and not image:
-            def post(path,body=None):
-                request=urllib.request.Request(self.endpoint+path,data=json.dumps(body).encode() if body is not None else None,headers=headers)
-                with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
-            if self.context is None:self.context=int(post('/props')['default_generation_settings']['n_ctx'])
-            prompt=post('/apply-template',dict(messages=payload['messages'],chat_template_kwargs={'enable_thinking':False}))['prompt']
-            count=len(post('/tokenize',dict(content=prompt,add_special=True))['tokens'])
-            # Include schema overhead conservatively even on backends that apply
-            # it only as a grammar. Reserve the complete output and safety margin.
-            schema_count=len(post('/tokenize',dict(content=json.dumps(schema,ensure_ascii=False),add_special=False))['tokens'])
-            if count+schema_count+self.max_tokens+512>self.context:
-                raise ContextBudgetExceeded('Complete semantic packet exceeds actual model context')
         started=time.monotonic()
         with model_turn(self.store,self):
+            from .model_profile import ensure
+            ensure(self,'vision' if image else 'text')
+            if self.measure_context and not image:
+                def post(path,body=None):
+                    request=urllib.request.Request(self.endpoint+path,data=json.dumps(body).encode() if body is not None else None,headers=headers)
+                    with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
+                if self.context is None:self.context=int(post('/props')['default_generation_settings']['n_ctx'])
+                prompt=post('/apply-template',dict(messages=payload['messages'],chat_template_kwargs={'enable_thinking':False}))['prompt']
+                count=len(post('/tokenize',dict(content=prompt,add_special=True))['tokens'])
+                # Include schema overhead conservatively even on backends that apply
+                # it only as a grammar. Reserve the complete output and safety margin.
+                schema_count=len(post('/tokenize',dict(content=json.dumps(schema,ensure_ascii=False),add_special=False))['tokens'])
+                if count+schema_count+self.max_tokens+512>self.context:
+                    raise ContextBudgetExceeded('Complete semantic packet exceeds actual model context')
             request=urllib.request.Request(self.endpoint+'/v1/chat/completions',data=json.dumps(payload).encode(),headers=headers)
             with urllib.request.urlopen(request,timeout=self.timeout) as response:reply=json.load(response)
         choice=reply['choices'][0]

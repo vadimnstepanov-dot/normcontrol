@@ -108,7 +108,7 @@ class Bridge:
         if os.getenv('KNOWLEDGE_EXPERT_ONLY')=='1':capabilities=['expert.apply']
         elif os.getenv('KNOWLEDGE_REVIEW_ONLY')=='1':capabilities=['review.execute','trace.suggest','review.suggest']
         claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,
-                                             'features':['context-budget-v3']})['command']
+                                             'features':['context-budget-v4']})['command']
         if claim is None:return False
         # After a lost reply the portal lease expires and the same command is redelivered.
         # The store's durable inbox returns exactly the original result.
@@ -122,7 +122,7 @@ class Bridge:
         elif claim['kind']=='trace.suggest':
             from .trace_suggest import suggest
             from .review_client import LlamaClient
-            model=self.check_client or LlamaClient(os.environ['NORMCONTROL_LLM_ENDPOINT'],context=16384,output_tokens=2048,timeout=300)
+            model=self.check_client or LlamaClient(os.environ['NORMCONTROL_LLM_ENDPOINT'],context=16384,output_tokens=2048,timeout=300,store=self.store)
             stopped=threading.Event()
             def renew_trace():
                 while not stopped.wait(30):
@@ -197,7 +197,7 @@ class Bridge:
         elif claim['kind']=='review.suggest':
             from .experience import suggest
             from .review_client import LlamaClient
-            client=self.experience_advisor or LlamaClient(os.environ['NORMCONTROL_LLM_ENDPOINT'],context=8192,output_tokens=1024,timeout=90)
+            client=self.experience_advisor or LlamaClient(os.environ['NORMCONTROL_LLM_ENDPOINT'],context=8192,output_tokens=1024,timeout=90,store=self.store)
             def grant_suggestion(actor,set_id,action):
                 return self.transport('/worker/authorize/',dict(user_id=actor,set_id=set_id,action=action)).get('allowed') is True
             stopped=threading.Event()

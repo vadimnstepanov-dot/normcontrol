@@ -284,9 +284,14 @@ def claim(worker_id, capabilities, features=()):
         if c.kind=='review.execute':
             # Additive rollout: a new worker never takes an old pinned review,
             # and an old worker cannot take a newly planned review.
-            if c.payload.get('planning_version') not in (None,'context-budget-v3'):continue
-            optimized=c.payload.get('planning_version')=='context-budget-v3'
-            if optimized != ('context-budget-v3' in features):continue
+            version=c.payload.get('planning_version')
+            if version not in (None,'context-budget-v3','context-budget-v4'):continue
+            if version is None:
+                if features:continue
+            elif version not in features:continue
+            # A profile-aware review must not switch the GPU under a previously
+            # pinned review. Reserve one normative executor at a time.
+            if Command.objects.filter(kind='review.execute',state='delivering').exclude(pk=c.pk).exists():continue
         if ('trace.suggest' not in capabilities and
             ((c.kind=='review.execute' and c.payload.get('trace_version')) or
              (c.kind=='release.prepare' and c.payload.get('curation',{}).get('links')))):

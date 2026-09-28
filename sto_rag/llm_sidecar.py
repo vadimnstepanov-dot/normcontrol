@@ -245,7 +245,7 @@ def stop_backend():
             raise RuntimeError('Порт LLM ещё занят; запуск второго экземпляра отменён')
 
 
-def start_backend():
+def start_backend(profile=None):
     if ready():return
     if backend():
         deadline=time.monotonic()+180
@@ -255,7 +255,11 @@ def start_backend():
         raise TimeoutError('Модель уже запущена, но не готова; второй экземпляр не создаётся')
     if not LAUNCHER.exists():raise FileNotFoundError('Не найден локальный скрипт запуска модели')
     command=['cmd.exe','/c',str(LAUNCHER)] if os.name=='nt' else [str(LAUNCHER)]
-    subprocess.Popen(command,cwd=str(LAUNCHER.parent),
+    environment=os.environ.copy()
+    if profile is not None:
+        if profile not in ('text','vision'):raise ValueError('Model profile')
+        environment['NORMCONTROL_LLM_PROFILE']=profile
+    subprocess.Popen(command,cwd=str(LAUNCHER.parent),env=environment,
         stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     deadline=time.monotonic()+180
@@ -263,6 +267,27 @@ def start_backend():
         if ready():return
         time.sleep(2)
     raise TimeoutError('Модель не запустилась за 3 минуты')
+
+
+def ensure_profile(profile):
+    """Called only by the authenticated gateway at an exclusive v2 turn boundary."""
+    if profile not in ('text','vision'):raise ValueError('Model profile')
+    def matches():
+        p=backend()
+        return p and ('--mmproj' in p.cmdline())==(profile=='vision') and ready()
+    if matches():return {'profile':profile,'ready':True,'changed':False}
+    store=Store()
+    # Older jobs pin their model profile. They must finish or be explicitly paused
+    # and revised by their owner; the profile adapter cannot silently change them.
+    with store.connect() as db:
+        if db.execute("SELECT 1 FROM jobs WHERE state IN ('running','preparing') LIMIT 1").fetchone():
+            raise BusyError('Legacy review owns the model')
+    with Lease(str(store.path)+'.worker.lock'),Lease(DATA/'model.lock'),SleepInhibitor():
+        if matches():return {'profile':profile,'ready':True,'changed':False}
+        if backend() and slot_activity() is not False:raise BusyError('Model request still in flight')
+        stop_backend();start_backend(profile)
+        if not matches():raise RuntimeError('Launcher did not activate requested model profile')
+        return {'profile':profile,'ready':True,'changed':True}
 
 
 def resume(store,ids):

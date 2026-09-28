@@ -36,7 +36,7 @@ def main():
     bridge = Bridge(store, args.portal, os.environ['NORMCONTROL_KNOWLEDGE_WORKER_TOKEN'])
     authorize = bridge.authorization_for(args.user_id)
     # Reading reports and issuing pause/resume must work while the model is off.
-    client = LlamaClient(args.endpoint, args.context, args.output_tokens) if args.command in ('create','run-once') else None
+    client = LlamaClient(args.endpoint, args.context, args.output_tokens,store=store) if args.command in ('create','run-once') else None
     selector=None
     if client and args.experience_scope:
         from .experience import ExperienceSelector

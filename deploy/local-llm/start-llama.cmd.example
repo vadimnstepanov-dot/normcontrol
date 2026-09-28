@@ -1,0 +1,18 @@
+@echo off
+setlocal
+rem Provide LLAMA_SERVER, LLAMA_MODEL and LLAMA_MMPROJ in the host environment.
+if not defined NORMCONTROL_LLM_PROFILE set "NORMCONTROL_LLM_PROFILE=text"
+if not defined LLAMA_SERVER exit /b 2
+if not defined LLAMA_MODEL exit /b 2
+set "VISION_ARGS="
+if /I "%NORMCONTROL_LLM_PROFILE%"=="vision" (
+  if not defined LLAMA_MMPROJ exit /b 2
+  set VISION_ARGS=--mmproj "%LLAMA_MMPROJ%" --no-mmproj-offload
+)
+if /I not "%NORMCONTROL_LLM_PROFILE%"=="vision" if /I not "%NORMCONTROL_LLM_PROFILE%"=="text" exit /b 2
+"%LLAMA_SERVER%" -m "%LLAMA_MODEL%" %VISION_ARGS% ^
+  --ctx-size 20480 -ngl 99 -t 8 -n 4096 ^
+  --host 127.0.0.1 --port 8082 --alias local-qwen ^
+  --fit off --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 ^
+  --batch-size 2048 --ubatch-size 512 --parallel 1 ^
+  --jinja

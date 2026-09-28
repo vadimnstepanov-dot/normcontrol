@@ -12,7 +12,7 @@ from .runtime import Lease,BusyError
 def serve(config_path):
     cfg=read(config_path)
     allowed_get={'/health','/props','/v1/models'}
-    allowed_post={'/apply-template','/tokenize','/v1/chat/completions'}
+    allowed_post={'/apply-template','/tokenize','/v1/chat/completions','/model/profile'}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def send(self,status,raw):
@@ -27,6 +27,13 @@ def serve(config_path):
                 n=int(self.headers.get('Content-Length','0'))
                 if not 0<=n<=8*1024**2:return self.send(413,b'{"error":"request too large"}')
                 raw=self.rfile.read(n) if self.command=='POST' else None
+                if self.path=='/model/profile':
+                    if not cfg.get('allow_model_profiles',False):return self.send(404,b'{"error":"profile control disabled"}')
+                    data=json.loads(raw)
+                    if not isinstance(data,dict) or set(data)!={'profile'} or data['profile'] not in ('text','vision'):
+                        return self.send(400,b'{"error":"invalid profile"}')
+                    from llm_sidecar import ensure_profile
+                    return self.send(200,json.dumps(ensure_profile(data['profile'])).encode())
                 if self.path=='/v1/chat/completions':
                     data=json.loads(raw)
                     if data.get('stream'):return self.send(400,b'{"error":"non-streaming requests only"}')
