@@ -56,6 +56,8 @@ def materialize(store,payload,original_ids,*,analyses=None):
         store.put_record(sid,'profile',identity,1,dict(definition=value,source_revision=[sorted(selected)[0],1],
             portal_profile_id=pid,portal_revision=p['revision'],publication_materialized=True))
         compiled_profiles[pid]=identity;refs.add((identity,1))
+    from .glossary import frozen_active
+    glossary_active=frozen_active(selection,loaded)
     effective=[];catalog=[];seen={}
     from .quality import assessment,duplicate_key,counts,MODE,VERSION as QUALITY_VERSION,source_example_scopes
     examples={s:source_example_scopes(store,a) for s,a in (analyses or {}).items()}
@@ -105,7 +107,8 @@ def materialize(store,payload,original_ids,*,analyses=None):
         record_refs=[(item['base_id'],1),*row['fragments']]
         if row['state']:record_refs.append((item['id'],item['revision']))
         store.put_record(sid,kind,rid,1,value,refs=record_refs);refs.add((rid,1))
-        if quality is None or quality['status']=='ready' or (quality['status']=='reference' and kind=='term_definition'):effective.append([rid,1])
+        active_term=kind!='term_definition' or glossary_active is None or item['id'] in glossary_active
+        if active_term and (quality is None or quality['status']=='ready' or (quality['status']=='reference' and kind=='term_definition')):effective.append([rid,1])
         # Dependency edges still point to exact source versions. Reattach their
         # origin to the effective card so the review retains critical context.
         for edge,dependency in edge_map.get((item['base_id'],1),[]):
@@ -121,7 +124,7 @@ def materialize(store,payload,original_ids,*,analyses=None):
             original_digest=item['digest'],locator=card.get('locator',''),description=card.get('description','')[:1500],semantic=semantic_hash(card),
             context=current,profiles=affected,profile_names=[index[p]['definition']['name'] for p in affected],
             trust=levels,quality=quality,refinement=card.get('refinement'),entity_type=card['entity_type'],
-            conditions=card.get('conditions',[]),exceptions=card.get('exceptions',[]),dependencies=card.get('dependencies',[]),
+            conditions=card.get('conditions',[]),exceptions=card.get('exceptions',[]),dependencies=card.get('dependencies',[]),glossary_active=active_term if kind=='term_definition' else None,
             profile_context=[dict(name=index[p]['definition']['name'],revision=index[p]['revision'],
                 expression=index[p]['definition']['expression']) for p in sorted(set().union(*(closure[x] for x in direct))) ]))
     if not any(x['entity_type']!='definition' for x in catalog):raise NotReady('No active requirements')

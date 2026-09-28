@@ -1,5 +1,6 @@
 """Freeze editor selections; the local worker validates their canonical versions."""
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from knowledge_v2.curation import VERSION,fingerprint,context_digest,profile_graph
 from .models import ExpertCard,DocumentProfile,SourceUpload,Command,AnalysisChunk
@@ -9,8 +10,14 @@ from .access import require
 
 
 def inventory(user,dataset):
-    profiles=snapshot_profiles(user,list(DocumentProfile.objects.filter(scope=dataset.scope).values_list('id',flat=True)))
-    rows=list(ExpertCard.objects.filter(source__normative_set__scope=dataset.scope,latest_analysis=True).select_related('source'))
+    profiles=snapshot_profiles(user,list(DocumentProfile.objects.filter(scope=dataset.scope,archived=False).filter(Q(normative_set=dataset)|Q(normative_set__isnull=True)).values_list('id',flat=True)))
+    # Legacy profiles without an area owner remain selectable by source bindings.
+    known={x['id'] for x in profiles}
+    for p in DocumentProfile.objects.filter(scope=dataset.scope,normative_set__isnull=True,archived=False):
+        if any(b['source_id'] in set(str(s) for s in dataset.sources.values_list('id',flat=True)) for b in p.definition.get('bindings',[])):
+            for value in snapshot_profiles(user,[p.pk]):
+                if value['id'] not in known:profiles.append(value);known.add(value['id'])
+    rows=list(ExpertCard.objects.filter(source__normative_set=dataset,latest_analysis=True).select_related('source'))
     items=[fingerprint(str(c.pk),str(c.source_id),c.profile_key,c.payload,c.status) for c in rows]
     return profiles,rows,items
 
@@ -23,7 +30,16 @@ def current_context(user,card):
 
 def selection(user,dataset,source_ids):
     profiles,rows,items=inventory(user,dataset);selected=set(map(str,source_ids))
-    selected_rows=[c for c in rows if str(c.source_id) in selected]
+    from .object_control import disabled_profiles
+    blocked=disabled_profiles(dataset)
+    profiles=[p for p in profiles if p['id'] not in blocked]
+    archived_profiles=set(map(str,DocumentProfile.objects.filter(normative_set=dataset,archived=True).values_list('pk',flat=True)))
+    archived_bindings={(b['source_id'],b['profile_id']) for p in DocumentProfile.objects.filter(normative_set=dataset,archived=True) for b in p.definition.get('bindings',[])}
+    active_bindings={(b['source_id'],b['profile_id']) for p in profiles for b in p['definition'].get('bindings',[])}
+    from .object_control import selected_cards
+    rows=selected_cards(dataset,rows)
+    selected_rows=[c for c in rows if str(c.source_id) in selected and c.payload.get('local_profile') not in archived_profiles
+                   and ((str(c.source_id),c.profile_key) not in archived_bindings or (str(c.source_id),c.profile_key) in active_bindings)]
     if not selected_rows:raise NotReady('No accepted cards')
     if any(c.pending_id and c.pending.state in ('pending','delivering') for c in selected_rows):
         raise Conflict('Wait for expert decisions to finish')
@@ -43,10 +59,12 @@ def selection(user,dataset,source_ids):
     related=set().union(*(closure[p] for p in index if closure[p]&owners)) if owners else set()
     from .trace_links import frozen
     links=frozen(dataset,source_ids)
+    from .glossary import frozen as frozen_glossary
     return dict(**({'links':links} if links else {}),version=VERSION,profiles=[p for p in profiles if p['id'] in related],
+        glossary=frozen_glossary(dataset,selected_rows),
         context_items=sorted(items,key=lambda x:x['id']),families=families,
         cards=[dict(id=str(c.pk),source_id=str(c.source_id),base_id=str(c.base_id),revision=c.revision,status=c.status,
-            digest=digest(c.payload),derived=c.history.filter(action__in=['split','merge','refine']).exists())
+            digest=digest(c.payload),derived=c.history.filter(action__in=['split','merge','refine','create']).exists())
                for c in sorted(selected_rows,key=lambda x:str(x.pk))])
 
 

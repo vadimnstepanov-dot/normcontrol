@@ -105,14 +105,69 @@ class Bridge:
         pending=self.store.pending_delivery()
         if pending and self.deliver(pending):return True
         capabilities=['trace.suggest','set.register','source.ingest','source.analyze','release.prepare','release.publish','release.revoke','review.execute','review.submit','review.approve','review.reject','review.revoke','experience.publish','review.repair','review.suggest']
-        if os.getenv('KNOWLEDGE_EXPERT_ONLY')=='1':capabilities=['expert.apply']
+        if os.getenv('KNOWLEDGE_EXPERT_ONLY')=='1':capabilities=['expert.apply','area.import']
         elif os.getenv('KNOWLEDGE_REVIEW_ONLY')=='1':capabilities=['review.execute','trace.suggest','review.suggest']
-        claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,
-                                             'features':['context-budget-v4']})['command']
+        else:capabilities.extend(['area.import','source.identify'])
+        capabilities.append('normative.search')
+        from .model_profile import enabled as profile_control
+        features=['context-budget-v4','check-log-v1']
+        if profile_control():features.append('visual-tail-v1')
+        claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,'features':features})['command']
         if claim is None:return False
         # After a lost reply the portal lease expires and the same command is redelivered.
         # The store's durable inbox returns exactly the original result.
-        if claim['kind']=='expert.apply':
+        if claim['kind']=='normative.search':
+            from .embedding import RemoteEncoder
+            from .search import HybridSearch,QdrantIndex
+            encoder,vector=self.normative_index or (RemoteEncoder(os.getenv('KNOWLEDGE_EMBEDDING_URL','http://127.0.0.1:8109')),QdrantIndex(os.getenv('KNOWLEDGE_QDRANT_URL','http://127.0.0.1:6333')))
+            payload=claim['payload']
+            def authorize(sid):return self.transport('/worker/authorize/',dict(user_id=payload['actor_id'],set_id=sid,action='read')).get('allowed') is True
+            found=HybridSearch(self.store,encoder,vector,authorize).reference(payload['release_id'],payload['query'],kinds=('requirement','term_definition'),profiles=payload.get('profiles'),limit=30)
+            with self.store.connection() as db:
+                for row in found:
+                    record=db.execute('SELECT payload FROM records WHERE id=? AND version=?',(row['record_id'],row['version'])).fetchone()
+                    value=json.loads(record['payload']);row['card_id']=value.get('lineage')
+            result=dict(kind='normative.search.done',set_id=payload['set_id'],release_id=payload['release_id'],entries=found)
+            result=self.store.remember_result(claim['command_id'],claim['kind'],payload,result)
+        elif claim['kind']=='source.identify':
+            from .source_identity import identify_source
+            from .structural_model import StructuralClient
+            p=claim['payload'];result=self.store.command_result(claim['command_id'],claim['kind'],p)
+            stopped=threading.Event()
+            def renew_identity():
+                while not stopped.wait(30):
+                    try:self.transport('/worker/renew/',dict(command_id=claim['command_id'],lease=claim['lease']))
+                    except Exception:return
+            heart=threading.Thread(target=renew_identity,daemon=True);heart.start()
+            try:
+                if result is None:
+                    model=self.analysis_client or StructuralClient(os.environ['NORMCONTROL_LLM_ENDPOINT'],os.getenv('KNOWLEDGE_LLM_MODEL','local-qwen'),self.store,api_key=os.getenv('NORMCONTROL_LLM_API_KEY',''),revision=os.environ['KNOWLEDGE_LLM_REVISION'],max_tokens=2500,measure_context=True)
+                    identity=identify_source(self.store,p['set_id'],p['source_id'],model,cancel=self.stop_event.is_set)
+                    result=self.store.remember_result(claim['command_id'],claim['kind'],p,dict(kind='source.identified',set_id=p['set_id'],source_identity=identity))
+            except Exception:
+                self.fail(claim,'source_identification_failed',False);raise
+            finally:stopped.set();heart.join(timeout=1)
+        elif claim['kind']=='area.import':
+            from .portable_area import apply
+            from .norm_runtime import projection_chunks
+            stopped=threading.Event()
+            def renew_import():
+                while not stopped.wait(30):
+                    try:self.transport('/worker/renew/',dict(command_id=claim['command_id'],lease=claim['lease']))
+                    except Exception:return
+            heart=threading.Thread(target=renew_import,daemon=True);heart.start()
+            try:
+                result=apply(self.store,claim['command_id'],claim['payload'],lambda actor,sid,action:self.transport('/worker/authorize/',dict(user_id=actor,set_id=sid,action=action)).get('allowed') is True)
+                rows=json.loads((self.store.directory/'area-imports'/(claim['command_id']+'.json')).read_text(encoding='utf8'))
+                for n,chunk in enumerate(projection_chunks(rows)):
+                    ack=self.transport('/worker/area-import/',dict(command_id=claim['command_id'],lease=claim['lease'],sequence=n,entries=chunk,digest=checksum(chunk)))
+                    if ack.get('accepted') is not True:raise ValueError('Area import not acknowledged')
+            except (ValueError,PermissionError,Conflict):
+                self.fail(claim,'area_import_validation_failed',True);raise
+            except Exception:
+                self.fail(claim,'area_import_delivery_failed',False);raise
+            finally:stopped.set();heart.join(timeout=1)
+        elif claim['kind']=='expert.apply':
             from .expert import apply
             def grant_expert(actor,set_id,action):
                 return self.transport('/worker/authorize/',dict(user_id=actor,set_id=set_id,action=action)).get('allowed') is True
@@ -291,7 +346,7 @@ class Bridge:
                         analysis=analyze_source(self.store,payload['set_id'],payload['source_id'],client=client,
                             cancel=cancelled,parse_ref=parse_ref)
                         self.analysis_delivery(claim,analysis)
-                    if client is not None and os.getenv('KNOWLEDGE_QUALITY_SCREENING','0')=='1':
+                    if client is not None and (payload.get('automatic_screening') or os.getenv('KNOWLEDGE_QUALITY_SCREENING','0')=='1'):
                         from .quality_audit import audit
                         if cancelled():raise InterruptedError('Stopped before quality screening')
                         audit_client=(self.analysis_client or StructuralClient(endpoint,client.model,self.store,

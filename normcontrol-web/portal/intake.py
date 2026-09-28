@@ -49,7 +49,7 @@ def launch_uploaded(user,data,files):
     title=data.get('name') or Path(files[0].name.replace('\\','/')).stem[:160]
     fingerprint=hashlib.sha256(json.dumps({'name':title,'checks':directions,
         'sets':sorted(data.get('normative_sets',[])),'experience':data.get('experience') or '',
-        'v2':settings.KNOWLEDGE_V2_ENABLED,
+        'v2':settings.KNOWLEDGE_V2_ENABLED,'logging_enabled':bool(data.get('logging_enabled')),
         'documents':sorted((Path(f.name.replace('\\','/')).name[:240],f.size,m['sha256']) for f,m in prepared)},
         sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     saved=[]
@@ -67,7 +67,7 @@ def launch_uploaded(user,data,files):
                 doc.file.save(f.name,f,save=False);saved.append((doc.file.storage,doc.file.name));doc.save()
             if settings.KNOWLEDGE_V2_ENABLED:
                 from knowledge.launch import start
-                start(user,batch.pk,directions,data.get('normative_sets',[]),data.get('experience'),data['launch_key'])
+                start(user,batch.pk,directions,data.get('normative_sets',[]),data.get('experience'),data['launch_key'],logging_enabled=bool(data.get('logging_enabled')))
                 batch.refresh_from_db()
             else:
                 batch.status='waiting'

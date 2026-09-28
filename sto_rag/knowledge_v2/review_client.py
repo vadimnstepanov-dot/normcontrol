@@ -36,8 +36,16 @@ class LlamaClient:
         if os.getenv('NORMCONTROL_LLM_API_KEY'):
             headers['Authorization'] = 'Bearer ' + os.environ['NORMCONTROL_LLM_API_KEY']
         req = urllib.request.Request(self.endpoint+path, data=None if value is None else encode(value).encode(), headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout or self.timeout) as response:
-            return json.load(response)
+        if path=='/v1/chat/completions':
+            from .check_log import call
+            with call(value,dict(model=self.model,context=self.context,output_tokens=self.output_tokens,timeout=self.timeout)) as record:
+                with urllib.request.urlopen(req,timeout=timeout or self.timeout) as response:result=json.load(response)
+                record(result);return result
+        with urllib.request.urlopen(req, timeout=timeout or self.timeout) as response:result=json.load(response)
+        if path=='/props':
+            from .check_log import emit
+            emit('model_configuration',result)
+        return result
 
     def request(self, payload):
         payload,_=wire_payload(payload)

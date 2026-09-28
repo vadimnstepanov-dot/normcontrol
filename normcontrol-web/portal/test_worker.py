@@ -23,6 +23,12 @@ class WorkerTests(TestCase):
         response=self.client.post('/normcontol/worker/ping/',{'worker':'desktop','state':'idle','rag':rag},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
         self.assertEqual(response.status_code,200);saved=WorkerPresence.objects.get(name='desktop').details['rag']
         self.assertEqual(saved['requirements'],850);self.assertEqual(saved['sources'][0]['name'],'СТО РЖД 04.001.1–2021')
+    def test_logged_batch_waits_for_capable_worker(self):
+        self.batch.logging_enabled=True;self.batch.save()
+        request=lambda data:self.client.post('/normcontol/worker/claim/',data,content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(request({'worker':'test'}).json()['reason'],'check_log_worker_upgrade_required')
+        self.assertFalse(WorkerRun.objects.filter(batch=self.batch).exists())
+        self.assertEqual(request({'worker':'test','features':['check-log-v1']}).json()['job'],str(self.batch.pk))
     def test_llm_telemetry_and_admin_control(self):
         telemetry='/normcontol/worker/llm/telemetry/'
         sample={'online':True,'processing':True,'uptime_seconds':3723,'cpu_percent':42,'ram_used_mb':24576,'ram_total_mb':65536,

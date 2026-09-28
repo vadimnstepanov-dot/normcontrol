@@ -32,6 +32,37 @@ def worker(view):
 
 def body(request):return json.loads(request.body or b'{}')
 
+
+@worker
+@require_POST
+def check_log_receive(request,lease):
+    from .models import BatchLogChunk
+    from knowledge.check_log import validate_chunk
+    from knowledge.services import digest
+    data=body(request);validate_chunk(data)
+    with transaction.atomic():
+        run=get_object_or_404(WorkerRun.objects.select_for_update().select_related('batch'),lease=lease)
+        if not run.batch.logging_enabled:return JsonResponse({'error':'Logging disabled'},status=409)
+        row,new=BatchLogChunk.objects.get_or_create(batch=run.batch,sequence=data['sequence'],defaults={'entries':data['entries'],'digest':data['digest']})
+        if not new and row.digest!=data['digest']:return JsonResponse({'error':'Changed replay'},status=409)
+    return JsonResponse({'accepted':True})
+
+
+@login_required
+def check_log_download(request,pk):
+    batch=visible_batch(request.user,pk)
+    from knowledge.check_log import workbook,download
+    from knowledge.models import KnowledgeCheck
+    job=KnowledgeCheck.objects.filter(batch=batch).order_by('-created').first()
+    if job:return download(request,job.pk)
+    if not batch.logging_enabled or not batch.log_chunks.exists():return JsonResponse({'error':'log_not_available'},status=404)
+    from types import SimpleNamespace
+    class Empty:
+        def order_by(self,*args):return self
+        def iterator(self,**kwargs):return iter(())
+    job=SimpleNamespace(pk=batch.pk,batch=batch,state=batch.status,snapshot=SimpleNamespace(data={}),log_chunks=Empty(),finding_chunks=Empty(),summary={})
+    return FileResponse(workbook(job),as_attachment=True,filename=f'Лог-проверки-{batch.pk}.xlsx',content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 @worker
 @require_POST
 def ping(request):
@@ -154,6 +185,8 @@ def configuration(request):
 @require_POST
 def claim(request):
     data=body(request);name=str(data.get('worker','local'))[:100]
+    features=data.get('features',[])
+    if not isinstance(features,list) or any(not isinstance(x,str) for x in features):raise ValueError('Worker features')
     with transaction.atomic():
         run=WorkerRun.objects.select_for_update().filter(worker=name,state='claimed',local_id='').select_related('batch').first()
         from django.conf import settings
@@ -165,12 +198,13 @@ def claim(request):
                 if dependency_ready(c):return JsonResponse({'job':None})
         batch=run.batch if run else Batch.objects.select_for_update().filter(status='waiting',worker_run__isnull=True,archived=False).order_by('queue_position','created','pk').first()
         if not batch:return JsonResponse({'job':None})
+        if batch.logging_enabled and 'check-log-v1' not in features:return JsonResponse({'job':None,'reason':'check_log_worker_upgrade_required'})
         if not run:run=WorkerRun.objects.create(batch=batch,worker=name)
         checks=batch.checks
         if settings.KNOWLEDGE_V2_ENABLED:
             # V2 owns STO: never silently substitute the legacy catalog.
             checks=[x for x in checks if x!='sto']
-        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
+        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'logging_enabled':batch.logging_enabled,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
 
 @worker
 @require_POST

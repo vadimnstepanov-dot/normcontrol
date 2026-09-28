@@ -7,6 +7,8 @@ path('batches/new/',v.new_batch,name='new'),path('batches/<uuid:pk>/',v.detail,n
 path('reports/',v.reports,name='reports'),path('rag/',v.rag,name='rag'),path('settings/llm/',v.llm,name='llm'),path('settings/queue/',v.queue,name='queue'),path('settings/queue/<uuid:pk>/action/',v.queue_action,name='queue-action'),path('settings/users/',v.users,name='users'),path('settings/users/<int:pk>/toggle/',v.toggle_user,name='toggle-user'),path('settings/users/<int:pk>/password/',v.reset_user,name='reset-user'),path('settings/audit/',v.audit_log,name='audit'),path('account/password/',v.password,name='password'),path('health/',v.health)]
 routes += [path('worker/claim/',w.claim),path('worker/<uuid:lease>/files/<int:pk>/',w.file),path('worker/<uuid:lease>/update/',w.update),path('worker/<uuid:lease>/feedback/<int:pk>/',w.feedback_result),path('batches/<uuid:pk>/status/',w.status,name='batch-status'),path('batches/<uuid:pk>/report/',w.report,name='batch-report'),path('batches/<uuid:pk>/feedback/',w.feedback,name='batch-feedback')]
 routes.append(path('batches/<uuid:pk>/register/',w.register,name='batch-register'))
+routes.append(path('worker/<uuid:lease>/log/',w.check_log_receive))
+routes.append(path('batches/<uuid:pk>/log.xlsx',w.check_log_download,name='batch-check-log'))
 routes.append(path('batches/<uuid:pk>/wake/',w.wake,name='batch-wake'))
 routes.append(path('batches/<uuid:pk>/findings/<str:finding_id>/disposition/',w.disposition,name='finding-disposition'))
 routes.append(path('worker/feedback/',w.pending_feedback))

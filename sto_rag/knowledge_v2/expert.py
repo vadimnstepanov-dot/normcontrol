@@ -6,7 +6,7 @@ import uuid
 from .store import checksum, encode, Conflict
 
 TYPES={'requirement','recommendation','permission','assumption','constraint','definition'}
-EDITABLE={'description','entity_type','conditions','exceptions','applicability_note','term'}
+EDITABLE={'description','entity_type','conditions','exceptions','applicability_note','term','glossary_kind'}
 
 
 def edited(base, patch):
@@ -26,6 +26,9 @@ def edited(base, patch):
             if not isinstance(value,str) or len(value)>12000:raise ValueError('Text field')
             card[name]=value.strip()
     if not card.get('description') or card.get('entity_type') not in TYPES:raise ValueError('Description/type required')
+    if card['entity_type']=='definition':
+        from .glossary import identity
+        identity(card)
     if 'description' in patch and len(card.get('obligations',[]))==1:
         card['obligations'][0]['description']=card['description']
         card['composition']={'atom':[card['description']]}
@@ -65,7 +68,7 @@ def apply(store,command_id,payload,authorize):
     if not authorize(actor,sid,'read' if action=='inspect' else 'review'):raise PermissionError('Expert permission revoked')
     old=store.command_result(command_id,'expert.apply',payload)
     if old:return old
-    if action not in ('inspect','edit','confirm','reject','split','merge','refine'):raise ValueError('Expert action')
+    if action not in ('inspect','edit','confirm','reject','split','merge','refine','create'):raise ValueError('Expert action')
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         previous=db.execute('SELECT digest,result FROM inbox WHERE id=?',(command_id,)).fetchone()
@@ -108,6 +111,13 @@ def apply(store,command_id,payload,authorize):
         ref,state,evidence=loaded[0]
         if action=='inspect':
             updates=[dict(id=ref['id'],revision=ref['revision'],contexts=evidence)]
+        elif action=='create':
+            if not payload.get('profile_id'):raise ValueError('Choose profile')
+            if len(state['card'].get('obligations',[]))!=1 and state['card'].get('entity_type')!='definition':raise ValueError('Choose an atomic source basis')
+            card=edited(state['card'],dict(payload.get('patch') or {},description=payload['description']))
+            card['local_profile']=payload['profile_id'];card['profile_id']='local:'+payload['profile_id']
+            child=dict(ref,id=str(uuid.uuid5(uuid.UUID(command_id),'manual-requirement')),revision=0)
+            save(child,state,card,'unreviewed',lineage=[ref['id']],approval=None)
         elif action=='edit':save(ref,state,edited(state['card'],payload['patch']),'unreviewed')
         elif action in ('confirm','reject'):
             updated=copy.deepcopy(state['card']);approval=None

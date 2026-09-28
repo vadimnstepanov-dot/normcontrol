@@ -30,7 +30,7 @@ def catalog(request):
     scopes=[s for s in Scope.objects.all() if allowed(request.user,s,'read')]
     return JsonResponse(dict(scopes=[dict(id=str(s.pk),name=s.name) for s in scopes],
         profiles=[dict(id=str(p.pk),name=p.name,scope_id=str(p.scope_id),parents=p.definition.get('parents',[]),
-            glossary='глоссар' in p.name.lower()) for p in DocumentProfile.objects.filter(scope__in=scopes).order_by('name')]))
+            glossary='глоссар' in p.name.lower()) for p in DocumentProfile.objects.filter(scope__in=scopes,archived=False).order_by('name')]))
 
 
 def profile_for(request,scope):
@@ -48,18 +48,18 @@ def cards(request):
         from .curation import inventory
         from knowledge_v2.curation import profile_graph
         # Only local refinements of this profile/ancestors belong in this view.
-        profiles=[dict(id=str(p.pk),definition=p.definition,revision=p.revision) for p in DocumentProfile.objects.filter(scope=scope)]
+        profiles=[dict(id=str(p.pk),definition=p.definition,revision=p.revision) for p in DocumentProfile.objects.filter(scope=scope,archived=False)]
         _,closure=profile_graph(profiles)
         query=query.filter(expression|Q(payload__local_profile__in=list(closure[str(profile.pk)])))
     if request.GET.get('type'):query=query.filter(entity_type=request.GET['type'])
     if request.GET.get('glossary')=='1':query=query.filter(entity_type='definition')
     if request.GET.get('status'):query=query.filter(status=request.GET['status'])
-    else:query=query.exclude(status='superseded')
+    else:query=query.exclude(status__in=['rejected','superseded'])
     if request.GET.get('q'):
-        q=request.GET['q'][:300];query=query.filter(Q(description__icontains=q)|Q(source__filename__icontains=q)|Q(section__icontains=q))
+        q=request.GET['q'][:300];query=query.filter(Q(description__icontains=q)|Q(source__filename__icontains=q)|Q(source__identification__fields__short_title__value__icontains=q)|Q(source__identification__fields__full_title__value__icontains=q)|Q(section__icontains=q))
     sections=list(query.order_by().values('section').annotate(count=Count('id')).order_by('section')[:250])
     if request.GET.get('section'):query=query.filter(section=request.GET['section'])
-    page=int(request.GET.get('page','1'));size=25
+    page=int(request.GET.get('page','1'));size=min(50,max(1,int(request.GET.get('size','25'))))
     if not 1<=page<=100000:raise ValueError('Page')
     count=query.count()
     rows=query.defer('payload','contexts').order_by('source__filename','section','id')[(page-1)*size:page*size]

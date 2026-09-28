@@ -34,6 +34,8 @@ class NormativeSet(models.Model):
     state = models.CharField(max_length=16, default='empty')
     active_release = models.ForeignKey('Release', null=True, blank=True, on_delete=models.PROTECT, related_name='+')
     created = models.DateTimeField(auto_now_add=True)
+    description = models.TextField(blank=True)
+    automatic = models.BooleanField(default=False)
 
 
 class Release(models.Model):
@@ -73,7 +75,6 @@ class Command(models.Model):
     result = models.JSONField(default=dict)
     created = models.DateTimeField(auto_now_add=True)
 
-
 class Receipt(models.Model):
     id = models.UUIDField(primary_key=True, editable=False)
     command = models.ForeignKey(Command, on_delete=models.PROTECT)
@@ -99,6 +100,16 @@ class SourceUpload(models.Model):
     sha256 = models.CharField(max_length=64)
     size = models.PositiveBigIntegerField()
     storage_key = models.CharField(max_length=160)
+    identification = models.JSONField(default=dict)
+    identification_revision = models.PositiveIntegerField(default=1)
+
+    @property
+    def display_name(self):
+        fields=self.identification.get('fields',{})
+        title=fields.get('short_title',{}).get('value','').strip()
+        date=fields.get('approval_date',{}).get('value','').strip()
+        return (title+(' · утв. '+date if date else '')) if title else self.filename
+
     supersedes = models.ForeignKey('self', null=True, blank=True, on_delete=models.PROTECT)
     state = models.CharField(max_length=16, default='queued')
     result = models.JSONField(default=dict)
@@ -135,6 +146,8 @@ class DocumentProfile(models.Model):
     revision = models.PositiveIntegerField(default=1)
     definition = models.JSONField()
     updated = models.DateTimeField(auto_now=True)
+    normative_set = models.ForeignKey(NormativeSet, null=True, blank=True, on_delete=models.PROTECT, related_name='profiles')
+    archived = models.BooleanField(default=False)
 
 
 class ProfileRevision(models.Model):
@@ -183,6 +196,16 @@ class KnowledgeFindingChunk(models.Model):
         constraints=[models.UniqueConstraint(fields=['job','sequence'],name='knowledge_check_finding_chunk')]
 
 
+class CheckLogChunk(models.Model):
+    job = models.ForeignKey(KnowledgeCheck, on_delete=models.PROTECT, related_name='log_chunks')
+    sequence = models.PositiveIntegerField()
+    entries = models.JSONField()
+    digest = models.CharField(max_length=64)
+    created = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['job','sequence'],name='knowledge_check_log_chunk')]
+
+
 class ExpertCard(models.Model):
     """Indexed UI projection. Canonical expert versions remain on the local worker."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -217,6 +240,24 @@ class ExpertCardRevision(models.Model):
         constraints = [models.UniqueConstraint(fields=['card','revision'], name='expert_card_revision')]
 
 
+class GlossaryGroup(models.Model):
+    normative_set = models.ForeignKey(NormativeSet,on_delete=models.PROTECT,related_name='glossary_groups')
+    key = models.CharField(max_length=520)
+    active = models.ForeignKey(ExpertCard,null=True,on_delete=models.PROTECT,related_name='+')
+    revision = models.PositiveIntegerField(default=1)
+    expert_selected = models.BooleanField(default=False)
+    conflict = models.BooleanField(default=False)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['normative_set','key'],name='knowledge_glossary_key')]
+
+
+class GlossaryVariant(models.Model):
+    card = models.OneToOneField(ExpertCard,on_delete=models.PROTECT,related_name='glossary_variant')
+    group = models.ForeignKey(GlossaryGroup,on_delete=models.PROTECT,related_name='variants')
+    term = models.CharField(max_length=500)
+    kind = models.CharField(max_length=16)
+
+
 class NormativeLink(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     normative_set = models.ForeignKey(NormativeSet, on_delete=models.PROTECT, related_name='trace_links')
@@ -235,3 +276,15 @@ class NormativeLinkRevision(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     class Meta:
         constraints=[models.UniqueConstraint(fields=['link','revision'],name='trace_link_revision')]
+
+
+class ObjectControl(models.Model):
+    """Expert lifecycle overlay; immutable releases and original evidence are retained."""
+    normative_set = models.ForeignKey(NormativeSet, on_delete=models.PROTECT)
+    kind = models.CharField(max_length=16)
+    object_id = models.UUIDField()
+    enabled = models.BooleanField(default=True)
+    deleted = models.BooleanField(default=False)
+    revision = models.PositiveIntegerField(default=1)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['kind','object_id'],name='knowledge_object_control')]

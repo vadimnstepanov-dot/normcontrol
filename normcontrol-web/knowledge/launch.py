@@ -20,11 +20,12 @@ class LaunchForm(forms.Form):
         required=False,widget=forms.CheckboxSelectMultiple)
     experience=forms.ChoiceField(label='Проверенный опыт рецензий',required=False)
     launch_key=forms.UUIDField(widget=forms.HiddenInput)
+    logging_enabled=forms.BooleanField(label='Сохранять подробный лог проверки (.xlsx)',required=False)
 
     def __init__(self,*args,user,batch=None,**kwargs):
         super().__init__(*args,**kwargs)
         eligible=[x for x in NormativeSet.objects.select_related('scope','active_release').order_by('name')
-            if allowed(user,x.scope,'read') and x.state=='ready' and x.active_release
+            if __import__('knowledge.object_control',fromlist=['metadata']).metadata('area',x.pk)['enabled'] and allowed(user,x.scope,'read') and x.state=='ready' and x.active_release
             and x.active_release.state=='active']
         norms=[x for x in eligible if x.purpose=='normative'
             and x.active_release.manifest.get('versions',{}).get('curation_digest')]
@@ -33,6 +34,7 @@ class LaunchForm(forms.Form):
         self.norms=norms
         self.experiences={str(x.pk):x for x in eligible if x.purpose=='experience'}
         self.initial.update(checks=list(batch.checks) if batch else ['sto','logic','language'],launch_key=uuid.uuid4())
+        self.initial['logging_enabled']=batch.logging_enabled if batch else False
         if not batch:
             if len(norms)==1:self.initial['normative_sets']=[str(norms[0].pk)]
             return
@@ -52,7 +54,6 @@ class LaunchForm(forms.Form):
         selected=[x for x in self.norms if str(x.pk) in data.get('normative_sets',[])]
         scopes={x.scope_id for x in selected}
         if len(selected)>20:self.add_error('normative_sets','Выберите не более 20 нормативных наборов.')
-        if len(scopes)>1:self.add_error('normative_sets','Выберите нормативные наборы одной проектной области.')
         experience=self.experiences.get(data.get('experience'))
         if experience and experience.scope_id not in scopes:
             self.add_error('experience','Опыт рецензий должен относиться к той же проектной области, что и нормативы.')
@@ -65,7 +66,7 @@ class NewLaunchForm(LaunchForm):
 
 
 @transaction.atomic
-def start(user,batch_id,directions,set_ids,experience,key):
+def start(user,batch_id,directions,set_ids,experience,key,*,logging_enabled=False):
     batch=Batch.objects.select_for_update().get(pk=batch_id)
     if not can_edit(user,batch) or batch.archived:raise PermissionDenied('Batch owner required')
     if not directions or len(set(directions))!=len(directions) or set(directions)-{x[0] for x in CHECKS}:
@@ -73,18 +74,22 @@ def start(user,batch_id,directions,set_ids,experience,key):
     previous=Command.objects.filter(idempotency_key=digest(['check-start',user.pk,str(key)])).first()
     if previous:
         if (previous.payload.get('batch_id')!=str(batch.pk) or previous.payload.get('set_ids')!=sorted(set_ids)
-            or previous.payload.get('directions')!=directions or previous.payload.get('experience_set_id')!=(experience or None)):
+            or previous.payload.get('directions')!=directions or previous.payload.get('experience_set_id')!=(experience or None)
+            or bool(previous.payload.get('logging',{}).get('enabled'))!=logging_enabled):
             raise Conflict('Повтор запуска отличается от первоначального запроса.')
         return KnowledgeCheck.objects.get(pk=previous.payload['job_id'])
     run=WorkerRun.objects.filter(batch=batch).first()
     # A running legacy review may gain a normative stage, but is never reset or reconfigured.
     attach=bool(run)
     if attach:
+        if logging_enabled!=batch.logging_enabled:raise Conflict('Для уже идущей проверки нельзя изменить запись журнала. Создайте повторную проверку с нужной опцией.')
         if 'sto' not in directions or set(directions)-{'sto'}!=set(batch.checks)-{'sto'}:
             raise Conflict('Идущую проверку нельзя перенастроить. Можно добавить только этап СТО.')
     elif batch.status not in ('prepared','cancelled'):
         raise Conflict('Пакет уже запущен. Обновите страницу.')
     legacy=[x for x in directions if x!='sto']
+    if type(logging_enabled) is not bool:raise ValueError('Logging boolean')
+    batch.logging_enabled=logging_enabled;batch.save(update_fields=['logging_enabled'])
     job=None
     if 'sto' in directions:
         job,c=checks.start(user,batch.pk,set_ids,experience or None,str(key),workflow={

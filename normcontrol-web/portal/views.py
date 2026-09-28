@@ -175,10 +175,12 @@ def new_batch(request):
         from knowledge.launch import NewLaunchForm
         from knowledge.services import Conflict,NotReady
         form=NewLaunchForm(data,user=request.user);failures+=(Conflict,NotReady)
+        if data is None:form.initial['logging_enabled']=bool(request.session.get('check_logging_enabled',False))
     if request.method=='POST':
         if form.is_valid():
             try:
                 batch,created=launch_uploaded(request.user,form.cleaned_data,request.FILES.getlist('documents'))
+                request.session['check_logging_enabled']=bool(form.cleaned_data.get('logging_enabled'))
                 return launch_response(request,batch,created)
             except PermissionDenied:form.add_error(None,'Доступ к нормативной базе изменился. Обновите страницу и проверьте выбранные наборы.')
             except failures as e:
@@ -272,6 +274,11 @@ def batch_action(request,pk):
                 return redirect('batch',pk=pk)
             files=[(d.file.storage,d.file.name) for d in batch.documents.all()]
             audit(request,'Удалён пакет '+str(batch.pk)+' «'+batch.name[:150]+'»')
+            if batch.knowledge_checks.exists():
+                batch.archived=True;batch.save(update_fields=['archived'])
+                messages.success(request,'Пакет убран из рабочего пространства. Закреплённые нормативные версии и история проверки сохранены.')
+                return redirect('dashboard')
+            batch.log_chunks.all().delete()
             batch.delete()
         cleanup_failed=False
         for storage,name in files:

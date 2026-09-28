@@ -38,7 +38,14 @@ class Client:
         if key:headers['Authorization']='Bearer '+key
         req=urllib.request.Request(self.config['endpoint'].rstrip('/')+path,data=dumps(payload).encode() if payload is not None else None,headers=headers)
         ca=os.getenv('NORMCONTROL_LLM_CA_FILE');context=ssl.create_default_context(cafile=ca) if ca else None
-        with urllib.request.urlopen(req,timeout=timeout or self.config['timeout'],context=context) as r:return json.load(r)
+        from knowledge_v2.check_log import call,emit
+        if path=='/v1/chat/completions':
+            with call(payload,self.config) as response:
+                with urllib.request.urlopen(req,timeout=timeout or self.config['timeout'],context=context) as r:value=json.load(r)
+                response(value);return value
+        with urllib.request.urlopen(req,timeout=timeout or self.config['timeout'],context=context) as r:value=json.load(r)
+        if path=='/props':emit('model_configuration',value)
+        return value
     def probe(self):
         self.props=self.http('/props',timeout=15)
         real=int(self.props['default_generation_settings']['n_ctx']);self.context=min(real,self.config['context'])

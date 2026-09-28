@@ -5,7 +5,7 @@ from .store import checksum
 
 VERSION='curation-9.1.5'
 SEMANTIC_FIELDS=('description','entity_type','modality','obligations','conditions','exceptions',
-    'applicability','dependencies','composition','composition_group','term','refinement','applicability_note')
+    'applicability','dependencies','composition','composition_group','term','glossary_kind','refinement','applicability_note')
 ADDRESS_KEYS={'id','locator','start','end','quote','context_hash','source_sha256','source_id','citation','citations'}
 
 

@@ -109,6 +109,11 @@ def analyze_semantic_source(store,set_id,source_id,source,blocks,client,cancel,p
                         context_hash=b['context_hash'],source_sha256=source['sha256']))
     if not blocks:raise ValueError('No material to analyze')
     result=extract_semantic(source_id,source,blocks,store.directory,client,cancel=cancel,parse_ref=parse_ref)
+    from .source_identity import extract as identify
+    try:source_identity=identify(source_id,source,blocks,store.directory,client,cancel)
+    except (TimeoutError,ConnectionError,OSError) as error:
+        from .source_identity import FIELDS,VERSION as IDENTITY_VERSION
+        source_identity=dict(version=IDENTITY_VERSION,status='unavailable',source_id=source_id,source_sha256=source['sha256'],fields={k:dict(value='',citations=[]) for k in FIELDS},confidence=None,issues=['LLM_connection_unavailable:'+type(error).__name__])
     result['source_gaps']=source_gaps
     if source_gaps:result['complete']=False
     entries=[];fragment_map={b['locator']:b for b in blocks}
@@ -145,6 +150,7 @@ def analyze_semantic_source(store,set_id,source_id,source,blocks,client,cancel,p
         uncertain_card_count=sum(bool(c['ambiguities']) for c in projection),
         rejected_proposal_count=len(result.get('rejected_proposals',[])),
         source_gap_count=len(source_gaps),
+        source_identity=source_identity,
         candidate_digest=checksum([checksum(chunk) for chunk in projection_chunks(projection)]))
     result.update(summary=summary,projection=projection,review_queue=result['coverage_audit']['gaps'])
     folder=store.directory/'analyses';folder.mkdir(exist_ok=True)

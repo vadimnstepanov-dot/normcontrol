@@ -28,7 +28,7 @@ class UnifiedLaunchTests(TestCase):
     def launch(self,directions=None,key=None):
         return start(self.user,self.batch.pk,directions or ['sto','logic','language'],[str(self.rules.pk)],None,key or uuid.uuid4())
 
-    def claim(self):return services.claim('test-v2',['review.execute','trace.suggest'],['context-budget-v4'])
+    def claim(self):return services.claim('test-v2',['review.execute','trace.suggest'],['context-budget-v4','visual-tail-v1'])
 
     def test_planning_version_routes_new_jobs_and_preserves_legacy_delivery(self):
         job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))
@@ -38,9 +38,15 @@ class UnifiedLaunchTests(TestCase):
 
     def test_new_worker_cannot_take_old_pinned_command(self):
         job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))
-        c.payload.pop('planning_version');c.save(update_fields=['payload'])
+        c.payload.pop('planning_version');c.payload.pop('visual_version',None);c.save(update_fields=['payload'])
         self.assertIsNone(self.claim());c.refresh_from_db();self.assertEqual(c.attempts,0)
         self.assertIsNotNone(services.claim('old',['review.execute','trace.suggest']))
+
+    def test_profile_unaware_worker_cannot_claim_new_visual_plan(self):
+        job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))
+        self.assertIsNone(services.claim('text-only',['review.execute'],['context-budget-v4']))
+        c.refresh_from_db();self.assertEqual(c.attempts,0)
+        self.assertIsNotNone(self.claim())
 
     def test_v3_running_check_blocks_v4_and_preserves_its_payload(self):
         job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))

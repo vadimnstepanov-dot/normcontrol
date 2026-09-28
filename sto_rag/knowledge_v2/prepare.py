@@ -57,6 +57,14 @@ def prepare(store, command_id, payload, encoder, vector, authorize):
             parse_refs[source_id]=analysis.get('parse_ref')
             semantic_cards.update(c['id'] for c in analysis['cards'])
             semantic_profiles.update(p['id'] for p in analysis['profiles'])
+    # Human versions from an earlier analysis of the SAME immutable source remain
+    # eligible. Original citations are revalidated by materialize, never inferred.
+    for item in payload.get('curation',{}).get('cards',[]):
+        base=by_id.get(item['base_id'],[])
+        if item['revision']>1 or item.get('derived'):
+            if not base or base[0][1] not in ('requirement','term_definition') or base[0][2].get('source_revision',[None])[0] not in selected:
+                raise Conflict('Expert lineage outside selected source')
+            semantic_cards.add(item['base_id'])
     for rid,versions in by_id.items():
         latest_version,kind,value=versions[-1]
         if value.get('publication_materialized'):continue

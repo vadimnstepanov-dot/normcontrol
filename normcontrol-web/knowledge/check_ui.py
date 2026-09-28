@@ -38,7 +38,7 @@ def start(request,batch_id):
         if form.is_valid():
             try:
                 data=form.cleaned_data
-                job=launch(request.user,batch.pk,data['checks'],data.get('normative_sets',[]),data.get('experience'),data['launch_key'])
+                job=launch(request.user,batch.pk,data['checks'],data.get('normative_sets',[]),data.get('experience'),data['launch_key'],logging_enabled=data['logging_enabled'])
                 return launch_response(request,batch)
             except (ValueError,Conflict,NotReady) as e:form.add_error(None,str(e))
         if request.headers.get('X-Requested-With')=='XMLHttpRequest':

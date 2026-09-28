@@ -40,7 +40,6 @@ def start(user,batch_id,set_ids,experience_set_id,key,*,workflow=None):
     if any(not x.active_release.manifest.get('versions',{}).get('curation_digest') for x in selected):
         raise NotReady('Подготовьте и опубликуйте выпуск с экспертными версиями. Старые проверки сохраняют свой снимок.')
     scopes={str(x.scope_id) for x in selected}
-    if len(scopes)!=1:raise NotReady('Use normative sets from one project scope per check')
     for x in selected:require(user,x.scope,'read')
     experience=None
     if experience_set_id:
@@ -57,8 +56,9 @@ def start(user,batch_id,set_ids,experience_set_id,key,*,workflow=None):
     payload=dict(set_id=str(selected[0].pk),actor_id=user.pk,job_id=str(job.pk),batch_id=str(batch.pk),
         snapshot_id=str(snap.pk),snapshot=snap.data,snapshot_digest=snap.digest,
         set_ids=sorted(set_ids),experience_set_id=experience_set_id,
-        experience_release_id=str(experience.pk) if experience else None,experience_scope_id=next(iter(scopes)),
+        experience_release_id=str(experience.pk) if experience else None,experience_scope_id=str(experience.normative_set.scope_id) if experience else sorted(scopes)[0],
         documents=docs,trace_version='package-trace-9.1.6',planning_version='context-budget-v4',visual_version='visual-tail-v1',**(workflow or {}))
+    payload['logging']={'enabled':batch.logging_enabled,'version':'check-log-v1','directions':list((workflow or {}).get('directions',batch.checks))}
     c=command(user,selected[0],'review.execute',identity,payload)
     audit(user,'knowledge_check.queued',job.pk,{'sets':len(selected),'documents':len(docs)})
     return job,c

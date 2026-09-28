@@ -18,6 +18,7 @@ from .runtime import Lease,BusyError,SleepInhibitor,implementation_hash
 from .evidence_context import rule_evidence,reference_payloads,reference_inventory,verification_context,restore_evidence_addresses,symbol_context,local_candidates,link_candidates
 
 STAGES=['language','logic','cross','inter','sto','verify']
+from .check_log import logged
 
 def response_cache_key(client,payload):
     # Cache the model response by its actual request, not by unrelated UI/report
@@ -213,6 +214,7 @@ class Engine:
         elif payload.get('blocks'):
             for part in split_blocks(payload['blocks']):self.enqueue_bounded(jid,stage,{**payload,'blocks':part,'scope':'split_subset','source_inventory':{'document_complete':False,'complete_sections':[]},'split_depth':depth+1},data,depth+1)
         else:raise BudgetError('Служебная часть не помещается')
+    @logged
     def run(self,jid):
         if not self.lock.acquire(False):raise ValueError('GPU уже занят другим заданием')
         previous_config,previous_client=self.config,self.client
@@ -274,6 +276,8 @@ class Engine:
         if self.lock.locked():raise ValueError('Другое задание уже выполняется')
         self.thread=threading.Thread(target=self.run,args=(jid,),daemon=True);self.thread.start()
     def execute(self,task):
+        from knowledge_v2.check_log import emit
+        emit('task',dict(id=task['id'],stage=task['stage'],payload=task['payload']))
         jid=task['job'];docs=self.material(jid);job=self.store.job(jid);cat=load_catalog(job['data']['catalog']);cards={c['requirement_id']:c for c in cat['cards']}
         result=self.store.cached(task['cache_key']);cached=result is not None;error=None;failure_result=None
         if not cached:
@@ -308,7 +312,9 @@ class Engine:
             # Persist the immutable model response before publishing any individual finding.
             # Recovery replays this same response instead of generating a second variant.
             self.store.cache(task['cache_key'],result)
-        if cached:result={**result,'reused_metrics':result.get('metrics',{}),'metrics':{'usage':{},'seconds':0,'estimated_tokens':self.client.count(task['payload'])}}
+        if cached:
+            emit('cached_response',dict(task_id=task['id'],response=result,cache_key=task['cache_key']))
+            result={**result,'reused_metrics':result.get('metrics',{}),'metrics':{'usage':{},'seconds':0,'estimated_tokens':self.client.count(task['payload'])}}
         raw=copy.deepcopy(result['raw']);valid=[];invalid=[]
         allowed={(b['document'],b['locator']) for b in task['payload'].get('blocks',[])}
         from .planning import coalesce_row_findings,coverage_questions

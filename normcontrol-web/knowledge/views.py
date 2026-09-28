@@ -18,6 +18,18 @@ from .models import DocumentProfile
 from . import profiles as profile_service
 
 
+def strict_object(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:raise ValueError('Duplicate JSON key')
+        result[key]=value
+    return result
+
+
+def invalid_constant(value):
+    raise ValueError('Non-finite JSON number')
+
+
 def boundary(methods, worker=False, max_body=2*1024*1024):
     def decorate(fn):
         @wraps(fn)
@@ -33,7 +45,7 @@ def boundary(methods, worker=False, max_body=2*1024*1024):
             try:
                 if int(request.META.get('CONTENT_LENGTH') or 0)>max_body or len(request.body)>max_body:
                     return JsonResponse({'error':'request_too_large'},status=413)
-                request.knowledge_body=json.loads(request.body or b'{}')
+                request.knowledge_body=json.loads(request.body or b'{}',object_pairs_hook=strict_object,parse_constant=invalid_constant)
                 if not isinstance(request.knowledge_body,dict):raise ValueError('Expected object')
                 return fn(request,*args,**kwargs)
             except ObjectDoesNotExist:return JsonResponse({'error':'not_found'},status=404)
@@ -71,7 +83,8 @@ def membership(request, scope_id):
 
 
 def set_json(x):
-    return dict(id=str(x.pk),name=x.name,purpose=x.purpose,scope_id=str(x.scope_id),state=x.state,
+    from .object_control import metadata
+    return dict(control=metadata('area',x.pk),id=str(x.pk),name=x.name,purpose=x.purpose,scope_id=str(x.scope_id),state=x.state,
                 metadata_revision=x.metadata_revision,active_release=str(x.active_release_id) if x.active_release_id else None)
 
 
@@ -131,7 +144,7 @@ def compare_releases(request,set_id):
         return JsonResponse(result)
     before={(x['kind'],x['id']):x for x in old.manifest['items']}
     after={(x['kind'],x['id']):x for x in new.manifest['items']}
-    names={str(x.pk):x.filename for x in SourceUpload.objects.filter(normative_set=dataset)}
+    names={str(x.pk):x.display_name for x in SourceUpload.objects.filter(normative_set=dataset)}
     def describe(keys):
         return [{'kind':kind,'id':rid,'name':names.get(rid,'')} for kind,rid in sorted(keys)[:30]]
     added=after.keys()-before.keys();removed=before.keys()-after.keys()
@@ -144,8 +157,10 @@ def compare_releases(request,set_id):
 
 
 def source_json(source):
+    from .object_control import metadata
     analysis=Command.objects.filter(normative_set_id=source.normative_set_id,kind='source.analyze',payload__source_id=str(source.pk)).order_by('-created').first()
-    return dict(id=str(source.pk),set_id=str(source.normative_set_id),name=source.filename,
+    from .source_identity import history
+    return dict(control=metadata('source',source.pk),id=str(source.pk),set_id=str(source.normative_set_id),name=source.display_name,filename=source.filename,identification=source.identification,identification_revision=source.identification_revision,identity_history=history(source),
         sha256=source.sha256,size=source.size,state=source.state,
         supersedes=str(source.supersedes_id) if source.supersedes_id else None,result=source.result,
         analysis={'state':analysis.state,'summary':analysis.result.get('summary',{})} if analysis else None)
@@ -358,7 +373,8 @@ def worker_authorize(request):
         raise ValueError('Unsupported authorization action')
     user=get_user_model().objects.filter(pk=data['user_id'],is_active=True).first()
     dataset=NormativeSet.objects.select_related('scope').filter(pk=data['set_id']).first()
-    return JsonResponse({'allowed':bool(dataset and allowed(user,dataset.scope,data['action']))})
+    action='upload' if dataset and dataset.automatic and data['action']=='publish' else data['action']
+    return JsonResponse({'allowed':bool(dataset and allowed(user,dataset.scope,action))})
 
 
 @boundary({'POST'},worker=True)
@@ -367,7 +383,7 @@ def worker_claim(request):
     if d['protocol_version']!=2 or not isinstance(d['capabilities'],list) or not all(isinstance(x,str) for x in d['capabilities']):raise ValueError('Protocol')
     if not set(d['capabilities'])<=s.PERMISSION.keys():raise ValueError('Capabilities')
     features=d.get('features',[])
-    if not isinstance(features,list) or any(x not in ('context-budget-v3','context-budget-v4') for x in features):raise ValueError('Worker features')
+    if not isinstance(features,list) or any(x not in ('context-budget-v3','context-budget-v4','check-log-v1','visual-tail-v1') for x in features):raise ValueError('Worker features')
     c=s.claim(settings.KNOWLEDGE_WORKER_ID,d['capabilities'],features)
     return JsonResponse({'command':c})
 

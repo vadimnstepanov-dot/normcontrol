@@ -11,10 +11,13 @@ from knowledge_v2.expert import edited
 
 def project(command,source,entries):
     """Called only after verified worker journal delivery, or explicit backfill of it."""
-    ExpertCard.objects.filter(source=source).exclude(analysis=command).update(latest_analysis=False)
+    protected=list(ExpertCard.objects.filter(source=source).filter(Q(revision__gt=1)|Q(history__action='create')).distinct())
+    protected_citations={digest(c.payload.get('citations',[])) for c in protected}
+    ExpertCard.objects.filter(source=source,revision=1).exclude(analysis=command).update(latest_analysis=False)
     # Include expert-created split/merge children, not just extraction entries.
     ExpertCard.objects.filter(source=source,analysis=command,latest_analysis=False).update(latest_analysis=True)
     for payload in entries:
+        blocked=digest(payload.get('citations',[])) in protected_citations
         identity=uuid.uuid5(command.pk,str(payload['id']))
         description=payload.get('description') or '; '.join(x.get('description') or x.get('object','') for x in payload.get('obligations',[]))
         card,created=ExpertCard.objects.get_or_create(pk=identity,defaults=dict(source=source,analysis=command,
@@ -22,6 +25,11 @@ def project(command,source,entries):
             entity_type=payload.get('entity_type','requirement'),profile_key=(payload.get('profile_id') or ''),
             section=str(payload.get('locator',''))))
         if created:ExpertCardRevision.objects.create(card=card,revision=1,payload=payload,digest=digest(payload),action='extracted',actor=None)
+        if created and blocked:
+            card.status='superseded';card.save(update_fields=['status'])
+    if protected:ExpertCard.objects.filter(pk__in=[c.pk for c in protected]).update(latest_analysis=True)
+    from .glossary import sync
+    sync(source.normative_set)
 
 
 def bindings(profile):
@@ -44,9 +52,10 @@ def inherited(card,profile):
 
 
 def card_json(card,detail=False,profile=None,user=None):
-    data=dict(id=str(card.pk),revision=card.revision,description=card.description,entity_type=card.entity_type,
+    from .object_control import metadata
+    data=dict(control=metadata('card',card.pk),id=str(card.pk),revision=card.revision,description=card.description,entity_type=card.entity_type,
         status=card.status,section=card.section,profile_key=card.profile_key,source_id=str(card.source_id),
-        source_name=card.source.filename,set_id=str(card.source.normative_set_id),
+        source_name=card.source.display_name,set_id=str(card.source.normative_set_id),
         inherited=inherited(card,profile),pending=str(card.pending_id) if card.pending_id and card.pending.state in ('pending','delivering') else None)
     if detail:
         owners=[]
@@ -72,9 +81,12 @@ def card_json(card,detail=False,profile=None,user=None):
             trust=trust(card.payload,card.payload.get('expert_approval'),current_context(user,card)),
             publication='published' if published else 'draft',analysis_state=card.analysis.state,history_count=card.history.count(),
             analysis_partial=card.analysis.result.get('summary',{}).get('semantic_completeness')!='model_reviewed',
-            history=[dict(revision=h.revision,action=h.action,reason=h.reason,created=h.created.isoformat(),
+        history=[dict(revision=h.revision,action=h.action,reason=h.reason,created=h.created.isoformat(),
                 author=h.actor.get_username() if h.actor else 'Модель',digest=h.digest)
                 for h in card.history.select_related('actor').order_by('-revision')[:30]])
+    if card.entity_type=='definition':
+        from .glossary import metadata
+        data['glossary']=metadata(card,detail)
     return data
 
 
@@ -86,7 +98,7 @@ def submit(user,identity,data,key):
     from .models import NormativeSet
     NormativeSet.objects.select_for_update().get(pk=dataset.pk)
     action=data['action'];require(user,dataset.scope,'read' if action=='inspect' else 'review')
-    if action not in ('inspect','edit','confirm','reject','split','merge','refine'):raise ValueError('Action')
+    if action not in ('inspect','edit','confirm','reject','split','merge','refine','create'):raise ValueError('Action')
     request_id=digest(['expert',user.pk,key])
     if not isinstance(key,str) or not 1<=len(key)<=128:raise ValueError('Idempotency key')
     old=Command.objects.filter(idempotency_key=request_id).first()
@@ -114,7 +126,7 @@ def submit(user,identity,data,key):
         cards.append(row)
     if data.get('profile_id'):
         p=DocumentProfile.objects.get(pk=data['profile_id'],scope=dataset.scope)
-        if action not in ('inspect','refine') and any(inherited(x,p) for x in cards):raise Conflict('Edit inherited requirement at owner')
+        if action not in ('inspect','refine','create') and any(inherited(x,p) for x in cards):raise Conflict('Edit inherited requirement at owner')
         if action=='refine':
             if not inherited(first,p):raise ValueError('Local refinement requires an inherited base')
             if first.payload.get('local_profile'):
@@ -152,7 +164,7 @@ def accept(command,payload):
         if card:
             if str(card.pk) not in refs or card.pending_id!=command.pk or update['revision']!=card.revision+1:raise Conflict('Stale expert response')
         else:
-            if command.payload['action'] not in ('split','merge','refine') or update['revision']!=1:raise Conflict('Unexpected new card')
+            if command.payload['action'] not in ('split','merge','refine','create') or update['revision']!=1:raise Conflict('Unexpected new card')
             card=ExpertCard(id=update['id'],source=original.source,analysis=original.analysis,base_id=update['base_id'])
         p=update['payload'];card.payload=p;card.revision=update['revision'];card.status=update['status'];card.pending=None
         card.description=p.get('description','');card.entity_type=p.get('entity_type','requirement');card.profile_key=(p.get('profile_id') or '');card.section=p.get('locator','')
@@ -160,4 +172,6 @@ def accept(command,payload):
         ExpertCardRevision.objects.create(card=card,revision=card.revision,payload=p,digest=digest(p),
             action=update['action'],reason=update['reason'],actor=command.actor)
     audit(command.actor,'expert.applied',original.pk,{'action':command.payload['action'],'cards':len(payload['updates'])})
+    from .glossary import sync
+    sync(original.source.normative_set)
     return dict(accepted=True,card_ids=[x['id'] for x in payload['updates']])

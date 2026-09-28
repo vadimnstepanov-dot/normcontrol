@@ -24,11 +24,12 @@ def activate_extracted_profiles(command,source,profiles):
     for identity in index:visit(identity,set())
     for p in ordered:
         glossary=p.get('key')=='glossary'
-        identity=str(uuid.uuid5(uuid.UUID(str(scope.pk)),'shared-normative-glossary')) if glossary else p['id']
+        identity=str(uuid.uuid5(source.normative_set.pk,'area-normative-glossary')) if glossary else p['id']
         definition=dict(name=p['name'],expression=p['expression'],parents=p.get('inherits',[]),
             bindings=[dict(source_id=str(source.pk),profile_id=p['id'])],
-            description='Автоматически выделен из нормативного источника. Требования требуют публикации и отдельного экспертного решения.')
-        row,created=DocumentProfile.objects.get_or_create(id=identity,defaults=dict(scope=scope,name=p['name'],definition=definition))
+            description='Автоматически сформирован LLM по нормативам области. Экспертная отметка хранится отдельно от публикации.')
+        definition['parents']=[str(uuid.uuid5(source.normative_set.pk,'area-normative-glossary')) if index[x].get('key')=='glossary' else x for x in definition['parents']]
+        row,created=DocumentProfile.objects.get_or_create(id=identity,defaults=dict(scope=scope,normative_set=source.normative_set,name=p['name'],definition=definition))
         if row.scope_id!=scope.pk:raise Conflict('Extracted profile ownership conflict')
         if created:
             ProfileRevision.objects.create(profile=row,revision=1,definition=definition,digest=digest(definition),actor=command.actor)
@@ -48,9 +49,10 @@ def activate_extracted_profiles(command,source,profiles):
 
 
 @transaction.atomic
-def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None):
-    if not user.is_authenticated or not user.is_active or not user.is_staff:raise PermissionDenied('Administrator required')
-    scope=Scope.objects.select_for_update().get(pk=scope_id);require(user,scope,'manage')
+def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None,*,dataset=None,create_identity=False):
+    if dataset is None and not user.is_staff:raise PermissionDenied('Administrator required for legacy global profiles')
+    scope=Scope.objects.select_for_update().get(pk=scope_id);require(user,scope,'review')
+    if dataset and dataset.scope_id!=scope.pk:raise ValueError('Area scope mismatch')
     keys={'name','expression','parents','bindings','description'}
     if not isinstance(definition,dict) or set(definition)!=keys:raise ValueError('Profile fields')
     if not isinstance(definition['name'],str) or not 1<=len(definition['name'].strip())<=160:raise ValueError('Profile name')
@@ -59,9 +61,10 @@ def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None
     if not isinstance(definition['parents'],list) or len(definition['parents'])>30 or len(set(definition['parents']))!=len(definition['parents']):raise ValueError('Parent profiles')
     if not isinstance(definition['bindings'],list) or len(definition['bindings'])>200:raise ValueError('Source profile bindings')
     identity=str(uuid.UUID(str(profile_id))) if profile_id else str(uuid.uuid4())
-    index={str(p.pk):p.definition for p in DocumentProfile.objects.filter(scope=scope)}
+    index={str(p.pk):p.definition for p in DocumentProfile.objects.filter(scope=scope,archived=False)}
     for parent in definition['parents']:
         if parent not in index:raise ValueError('Parent outside selected scope')
+        if dataset and DocumentProfile.objects.get(pk=parent).normative_set_id!=dataset.pk:raise ValueError('Parent outside selected area')
     index[identity]=definition
     visited=set()
     def visit(pid,path):
@@ -73,15 +76,17 @@ def save_profile(user,scope_id,definition,profile_id=None,expected_revision=None
     for binding in definition['bindings']:
         if not isinstance(binding,dict) or set(binding)!={'source_id','profile_id'}:raise ValueError('Binding fields')
         source=SourceUpload.objects.get(pk=binding['source_id'],normative_set__scope=scope)
+        if dataset and source.normative_set_id!=dataset.pk:raise ValueError('Source outside selected area')
         analyses=Command.objects.filter(normative_set=source.normative_set,kind='source.analyze',state='done',payload__source_id=str(source.pk))
         if not any(binding['profile_id'] in [p['id'] for p in c.result.get('summary',{}).get('profiles',[])] for c in analyses):
             raise ValueError('Source profile not analyzed')
-    if profile_id:
+    if profile_id and not create_identity:
         row=DocumentProfile.objects.select_for_update().get(pk=identity,scope=scope)
+        if dataset and row.normative_set_id!=dataset.pk:raise ValueError('Profile outside selected area')
         if type(expected_revision) is not int or row.revision!=expected_revision:raise Conflict('Profile changed; reload before saving')
         row.revision+=1;row.name=definition['name'].strip();row.definition=definition;row.save()
     else:
-        row=DocumentProfile.objects.create(id=identity,scope=scope,name=definition['name'].strip(),definition=definition)
+        row=DocumentProfile.objects.create(id=identity,scope=scope,normative_set=dataset,name=definition['name'].strip(),definition=definition)
     ProfileRevision.objects.create(profile=row,revision=row.revision,definition=definition,digest=digest(definition),actor=user)
     audit(user,'profile.saved',row.pk,{'revision':row.revision,'digest':digest(definition)})
     return row

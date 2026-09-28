@@ -43,6 +43,7 @@ class ExpertTests(TestCase):
         self.assertEqual(self.card.status,'confirmed');self.assertTrue(self.card.payload['expert_approved'])
         result=self.request('edit',patch={'description':'Повторно уточнённое требование.'});self.work()
         self.assertEqual(self.card.status,'unreviewed');self.assertFalse(self.card.payload['expert_approved'])
+
         self.assertEqual(self.card.history.get(revision=1).payload,base)
         self.assertEqual(self.card.history.count(),4)
         with self.store.connection() as db:
@@ -51,6 +52,26 @@ class ExpertTests(TestCase):
         prepared=s.prepare_selected_sources(self.user,self.dataset.pk,[str(c.source_id)],1,'include-reviewed-drafts')
         chosen=next(x for x in prepared.payload['curation']['cards'] if x['id']==str(c.pk))
         self.assertEqual(chosen['revision'],4);self.assertEqual(chosen['status'],'unreviewed')
+
+    def test_reanalysis_preserves_expert_deleted_record(self):
+        c=self.ready();old_description=c.description
+        self.assertEqual(self.request('reject').status_code,202);self.work()
+        cid=s.analyze_source(self.user,self.dataset.pk,c.source_id,'fresh-analysis-after-expert')
+        self.assertTrue(self.bridge.once())
+        c.refresh_from_db();self.assertEqual(c.status,'rejected');self.assertTrue(c.latest_analysis)
+        self.assertEqual(c.description,old_description)
+        repeated=ExpertCard.objects.filter(analysis=cid)
+        self.assertTrue(repeated.exists());self.assertTrue(all(x.status=='superseded' for x in repeated if x.payload.get('citations')==c.payload.get('citations')))
+
+    def test_manual_requirement_is_versioned_local_and_preserves_basis(self):
+        c=self.ready();p=DocumentProfile.objects.filter(normative_set=self.dataset).first()
+        before=copy.deepcopy(c.payload)
+        result=self.request('create',profile_id=str(p.pk),description='Контрольное требование эксперта с нормативным основанием.')
+        self.assertEqual(result.status_code,202,result.content);self.work()
+        child=ExpertCard.objects.exclude(pk=c.pk).filter(payload__local_profile=str(p.pk)).first()
+        self.assertIsNotNone(child);self.assertEqual(child.revision,1)
+        self.assertEqual(child.payload['obligations'][0]['description'],child.description)
+        self.assertEqual(self.card.payload,before)
 
     def test_parallel_stale_revision_and_idempotency(self):
         self.ready();data=dict(action='edit',expected_revision=1,reason='Исправление после сверки источника.',patch={'description':'Новое описание.'})

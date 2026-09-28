@@ -2,8 +2,31 @@ from django.urls import path
 from . import views
 from . import expert_views as e
 from . import trace_views as t
+from . import area as a
+from . import check_log as log
+from . import glossary as g
+from . import portable_area as portable
+from . import source_identity as source_meta
+from . import object_control
 
 urlpatterns=[
+    path('areas/<uuid:identity>/objects/<str:kind>/<uuid:object_id>/',object_control.change),
+    path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/identity/',source_meta.edit),
+    path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/identify/',source_meta.identify),
+    path('areas/<uuid:identity>/export.json',portable.export),
+    path('areas/<uuid:identity>/import/',portable.load),
+    path('worker/area-import/',portable.worker_chunk),
+    path('areas/<uuid:identity>/glossary/',g.registry),
+    path('areas/<uuid:identity>/glossary/<uuid:card_id>/activate/',g.activate),
+    path('areas/<uuid:identity>/search/',a.search),
+    path('worker/checks/log/',log.receive),
+    path('checks/<uuid:job_id>/log.xlsx',log.download,name='knowledge-check-log'),
+    path('areas/',a.areas),
+    path('areas/<uuid:identity>/',a.area),
+    path('areas/<uuid:identity>/profiles/',a.profiles),
+    path('areas/<uuid:identity>/profiles/<uuid:profile_id>/delete/',a.remove_profile),
+    path('areas/<uuid:identity>/reviews/',a.reviews),
+    path('areas/<uuid:identity>/reviews/<uuid:review_id>/',a.review_decision),
     path('trace/links/',t.links),
     path('trace/links/<uuid:identity>/',t.link),
     path('trace/suggest/',t.suggest),

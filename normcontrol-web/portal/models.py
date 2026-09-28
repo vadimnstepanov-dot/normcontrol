@@ -13,6 +13,7 @@ class Batch(models.Model):
     name=models.CharField(max_length=160)
     profile=models.CharField(max_length=12,choices=[('chtz','Частное техническое задание'),('tz','Техническое задание'),('oit','Описание информационной технологии'),('other','Другой технический документ')],default='chtz')
     checks=models.JSONField(default=list)
+    logging_enabled=models.BooleanField(default=False)
     status=models.CharField(max_length=20,choices=[('prepared','Подготовлен'),('waiting','В очереди'),('preparing','Подготовка'),('running','Проверяется'),('paused','Приостановлен'),('partial','Завершён с ограничениями'),('completed','Завершён'),('failed','Ошибка'),('cancelled','Отменён')],default='prepared')
     created=models.DateTimeField(auto_now_add=True)
     archived=models.BooleanField(default=False)
@@ -73,6 +74,16 @@ class LoginAttempt(models.Model):
     identity=models.CharField(max_length=64,db_index=True)
     ip=models.CharField(max_length=64,db_index=True)
     created=models.DateTimeField(auto_now_add=True,db_index=True)
+
+class BatchLogChunk(models.Model):
+    batch=models.ForeignKey(Batch,on_delete=models.PROTECT,related_name='log_chunks')
+    sequence=models.PositiveIntegerField()
+    entries=models.JSONField()
+    digest=models.CharField(max_length=64)
+    created=models.DateTimeField(auto_now_add=True)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['batch','sequence'],name='batch_log_sequence')]
+
 
 class WorkerRun(models.Model):
     batch=models.OneToOneField(Batch,on_delete=models.CASCADE,related_name='worker_run')

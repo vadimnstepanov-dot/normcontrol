@@ -19,7 +19,6 @@
     if(!existing&&!selected.length)problem='Добавьте хотя бы один документ.';
     else if(!directions.length)problem='Выберите хотя бы одно направление.';
     else if(sto&&normSection&&!norms.length)problem='Для СТО выберите нормативный набор.';
-    else if(sto&&chosenScopes.size>1)problem='Нормативные наборы должны быть из одной проектной области.';
     else if(sto&&experience&&!chosenScopes.has(experiences[experience]))problem='Выберите опыт рецензий из той же проектной области.';
     readiness.textContent=problem||'Готово к запуску. Проверьте выбранные направления.';readiness.classList.toggle('launch-readiness-error',!!problem);
     if(button){button.disabled=submitting||!!problem;button.title=problem;}

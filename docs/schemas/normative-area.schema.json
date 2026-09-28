@@ -1,0 +1,468 @@
+{
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "normcontrol.normative-area"
+    },
+    "version": {
+      "const": 1
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "area": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "automatic": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "automatic"
+      ],
+      "additionalProperties": false
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "maxItems": 100
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/profile"
+      },
+      "maxItems": 100
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/card"
+      },
+      "maxItems": 10000
+    },
+    "glossary": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/card"
+          },
+          "maxItems": 10000
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "maxLength": 510
+              },
+              "active_entry_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "key",
+              "active_entry_id"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "entries",
+        "choices"
+      ],
+      "additionalProperties": false
+    },
+    "interdocument_requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link"
+      },
+      "maxItems": 10000
+    },
+    "controls": {
+      "type": "array",
+      "maxItems": 11000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "id",
+          "enabled",
+          "deleted"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "area",
+              "source",
+              "profile",
+              "card",
+              "link"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "format",
+    "version",
+    "exported_at",
+    "area",
+    "sources",
+    "profiles",
+    "requirements",
+    "glossary",
+    "interdocument_requirements"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "filename": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "short_title": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "full_title": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "approved_by": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "signed_by": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "approval_date": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "approval_document_number": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "approval_document_date": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "filename",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "definition": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "parents": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "maxItems": 30
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "source_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "profile_id": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                },
+                "required": [
+                  "source_id",
+                  "profile_id"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 200
+            },
+            "expression": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "parents",
+            "bindings",
+            "expression"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "definition"
+      ],
+      "additionalProperties": false
+    },
+    "card": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "description",
+            "entity_type",
+            "citations"
+          ],
+          "properties": {
+            "description": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32000
+            },
+            "entity_type": {
+              "enum": [
+                "requirement",
+                "constraint",
+                "recommendation",
+                "permission",
+                "assumption",
+                "definition"
+              ]
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "locator",
+                  "quote",
+                  "start",
+                  "end",
+                  "context_hash"
+                ],
+                "properties": {
+                  "locator": {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  "quote": {
+                    "type": "string",
+                    "maxLength": 32000
+                  },
+                  "start": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "context_hash": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              },
+              "maxItems": 200
+            },
+            "term": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "glossary_kind": {
+              "enum": [
+                "term",
+                "symbol",
+                "abbreviation"
+              ]
+            },
+            "local_profile": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "source_id",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    "link": {
+      "type": "object",
+      "required": [
+        "id",
+        "revision",
+        "source",
+        "target",
+        "basis",
+        "source_type",
+        "target_type",
+        "relation",
+        "description",
+        "condition",
+        "mandatory_target",
+        "confidence",
+        "status",
+        "reason",
+        "pins"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "basis": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "target_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "relation": {
+          "enum": [
+            "preserves",
+            "details",
+            "verifies"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "condition": {
+          "type": "object"
+        },
+        "mandatory_target": {
+          "type": "boolean"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "confirmed",
+            "rejected"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "pins": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "title": "Нормативная область · версия 1",
+  "description": "Полный переносимый состав; оригиналы, ACL, история и секреты не включены. Сервер дополнительно проверяет связи и цитаты."
+}

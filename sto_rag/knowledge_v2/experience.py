@@ -244,6 +244,9 @@ class ExperienceSelector:
             if not eligible:continue
             hits=self.search.reference(release,query,kinds=('review_case','clarification'),
                 eligible_refs=list(eligible),limit=max_examples)
+            from .check_log import emit
+            emit('rag',dict(release_id=release,query=query,stage=stage,eligible_refs=list(eligible),
+                            limit=max_examples,token_budget=token_budget,hits=hits))
             for hit in hits:
                 key=(hit['record_id'],hit['version'])
                 # Revocation/ACL may happen while embeddings are being computed.

@@ -67,13 +67,14 @@ class SingleScreenLaunchTests(TestCase):
             response=self.submit()
         self.assertEqual(response.status_code,422);self.assertIn('Доступ к нормативной базе изменился',response.json()['errors']['__all__'][0]['message'])
         self.assertFalse(Batch.objects.exists());self.assertFalse(list(Path(self.temp.name).rglob('*.docx')))
-    def test_mixed_scope_and_wrong_experience_rejected_before_upload(self):
+    def test_mixed_scope_allowed_and_wrong_experience_rejected_before_upload(self):
         other_scope=Scope.objects.create(owner=self.user,name='Other scope',kind='project')
         other=self.make_set(other_scope,'Other norms');experience=self.make_set(other_scope,'Experience','experience')
-        response=self.submit(normative_sets=[str(self.norm.pk),str(other.pk)])
-        self.assertEqual(response.status_code,422);self.assertIn('normative_sets',response.json()['errors'])
         response=self.submit(experience=str(experience.pk))
         self.assertEqual(response.status_code,422);self.assertIn('experience',response.json()['errors']);self.assertFalse(Batch.objects.exists())
+        response=self.submit(normative_sets=[str(self.norm.pk),str(other.pk)])
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(len(KnowledgeCheck.objects.get().snapshot.data['releases']),2)
     def test_explicit_no_sto_does_not_create_normative_command(self):
         result=self.submit(checks=['logic','language'],normative_sets=[],experience='')
         self.assertEqual(result.status_code,200);self.assertEqual(Batch.objects.get().checks,['logic','language'])

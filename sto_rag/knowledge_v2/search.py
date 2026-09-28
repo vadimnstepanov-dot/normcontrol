@@ -113,7 +113,7 @@ def _entries(store, manifest, encoder):
             if effective is not None and (rid,version) not in effective:continue
             req=json.loads(db.execute('SELECT payload FROM records WHERE id=? AND version=?',(rid,version)).fetchone()[0])
             card=req.get('card',{})
-            memberships=set(card.get('profile_ids') or [card.get('effective_profile_id','')])-{''}
+            memberships=set(card.get('profile_ids') or [card.get('effective_profile_id','')])-{'',None}
             for ref in req['fragment_refs']:
                 fragment_profiles.setdefault(tuple(ref),set()).update(memberships)
         for (rid, version), item in refs.items():

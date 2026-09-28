@@ -19,6 +19,11 @@ class NormativeTests(TestCase):
         UploadTests.setUp(self)
         from knowledge_v2.tests.test_semantic import Model
         self.bridge.analysis_client=Model()
+        from unittest.mock import patch
+        support=patch('knowledge_v2.model_profile.enabled',return_value=True)
+        support.start();self.addCleanup(support.stop)
+        switch=patch('knowledge_v2.model_profile.ensure')
+        switch.start();self.addCleanup(switch.stop)
     transport=UploadTests.transport
     download=UploadTests.download
     upload=UploadTests.upload
@@ -49,6 +54,28 @@ class NormativeTests(TestCase):
         self.assertEqual(self.client.get(base).json()['active_release'],ready['id'])
         self.client.force_login(self.other)
         self.assertEqual(self.client.get(base).status_code,403)
+
+    def test_automatic_area_publishes_without_expert_preapproval(self):
+        from knowledge_v2.tests.test_search import FakeEncoder,FakeVectors
+        from types import SimpleNamespace
+        self.dataset.automatic=True;self.dataset.save()
+        self.bridge.normative_index=(FakeEncoder(),FakeVectors())
+        self.bridge.check_client=SimpleNamespace(signature='controlled-no-document-roles')
+        self.upload(docx(Path(self.tmp.name)/'automatic.docx').read_bytes())
+        for _ in range(12):
+            if not self.bridge.once():break
+        self.dataset.refresh_from_db()
+        self.assertIsNotNone(self.dataset.active_release_id,list(Command.objects.values('kind','state','result')))
+        self.assertEqual(self.dataset.active_release.state,'active')
+        self.assertTrue(self.dataset.profiles.exists())
+        self.assertFalse(Command.objects.filter(normative_set=self.dataset,state__in=['pending','failed']).exists())
+        found=self.client.post(f'/normcontol/api/v2/areas/{self.dataset.pk}/search/',json.dumps({'query':'журнал'}),content_type='application/json')
+        self.assertEqual(found.status_code,202,found.content)
+        self.assertTrue(self.bridge.once())
+        result=self.client.get(f'/normcontol/api/v2/areas/{self.dataset.pk}/search/?command='+found.json()['command_id']).json()
+        self.assertEqual(result['state'],'done',result)
+        self.assertTrue(result['result']['entries'])
+        self.assertTrue(all(x.get('card_id') for x in result['result']['entries']))
 
     def test_experience_and_normative_releases_cannot_replace_each_other(self):
         experience=s.create_set(self.user,'Lessons',self.scope.pk,'lesson-set',purpose='experience')
@@ -103,7 +130,7 @@ class NormativeTests(TestCase):
         self.client.post(base+'publish/',data=json.dumps({'release_id':ready['id'],'expected_revision':1}),
             content_type='application/json',HTTP_IDEMPOTENCY_KEY='publish-check')
         self.bridge.once()
-        batch=Batch.objects.create(owner=self.user,name='Independent check',status='prepared',checks=['sto'])
+        batch=Batch.objects.create(owner=self.user,name='Independent check',status='prepared',checks=['sto'],logging_enabled=True)
         contents=docx(Path(self.tmp.name)/'target.docx','Система должна хранить журнал 2 дня.').read_bytes()
         document=Document(batch=batch,name='target.docx',sha256=hashlib.sha256(contents).hexdigest(),size=len(contents))
         document.file.save('target.docx',ContentFile(contents),save=True)
@@ -119,6 +146,10 @@ class NormativeTests(TestCase):
         self.assertGreater(result['progress']['total'],0)
         findings=self.client.get(f'/normcontol/api/v2/checks/{job_id}/findings/').json()['entries']
         self.assertTrue(findings)
+        from .models import CheckLogChunk
+        self.assertTrue(CheckLogChunk.objects.filter(job_id=job_id).exists())
+        log=self.client.get(f'/normcontol/api/v2/checks/{job_id}/log.xlsx')
+        self.assertEqual(log.status_code,200);log.close()
         for extension in ('xlsx','docx'):
             exported=self.client.get(f'/normcontol/knowledge/checks/{job_id}/?format={extension}')
             self.assertEqual(exported.status_code,200,exported.content[:300])

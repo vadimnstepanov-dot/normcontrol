@@ -171,6 +171,8 @@ $env:PYTHONPATH = "$PWD\sto_rag"
 | [INSTALL.md](INSTALL.md) | Выбор схемы установки |
 | [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md) | Модель, Word, локальный обработчик и запуск на Windows |
 | [INSTALL-LINUX.md](INSTALL-LINUX.md) | Портал на VPS, полная установка для `.docx` и эксплуатация |
+| [Рабочее пространство нормативов](docs/NORMATIVE-WORKSPACE.md) | Дерево областей, глоссарий, реквизиты источников и журнал проверки |
+| [Перенос нормативной области](docs/NORMATIVE-AREA-JSON.md) | JSON-схема, оригиналы, проверка и подтверждение импорта |
 | [Нормативный контроль](docs/NORMATIVE-CONTROL.md) | Каталог требований, доказательства, применимость и проверка качества |
 | [Пример конфигурации](config/config.example.json) | Адрес модели, контекст и параметры обработки |
 

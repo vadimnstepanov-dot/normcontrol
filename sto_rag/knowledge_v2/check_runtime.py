@@ -10,6 +10,9 @@ from .review_client import LlamaClient
 from .store import checksum,Conflict,NotReady
 
 
+from .check_log import logged,emit
+
+@logged
 def execute(bridge,claim,download,client=None,experience_index=None):
     payload=claim['payload'];store=bridge.store
     if checksum(payload['snapshot'])!=payload['snapshot_digest']:raise Conflict('Portal snapshot digest')
@@ -118,6 +121,12 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         phase='text'
         progress_floor=0
         def progress(task_id,completed,total,decisions=None):
+            from .check_log import active
+            journal=active.get()
+            if journal:
+                emit('checkpoint',dict(task_id=task_id,completed=completed,total=total,decisions=decisions))
+                try:journal.deliver(bridge,claim)
+                except Exception:journal.append('log_delivery_error',dict(message='Будет повторено из сохранённого журнала'))
             completed=max(progress_floor,completed)
             preview=[dict(state='candidate',reason=str(d.get('reason',''))[:500],obligation_id=d.get('obligation_id'),
                           evidence=[{'quote':str(e.get('quote',''))[:500],'location':e.get('location','')}
@@ -136,6 +145,9 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             ensure(model,'text')
             task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
                 experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [])
+            with store.connection() as db:
+                planned=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
+            emit('plan',planned)
             if visual_enabled:
                 from .visual_tail import plan
                 with store.connection() as db:review_payload=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])

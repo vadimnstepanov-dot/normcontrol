@@ -121,6 +121,8 @@ def prepare_selected_sources(user,set_id,source_ids,expected_revision,key,mode='
     dataset=NormativeSet.objects.select_for_update().get(pk=set_id)
     if dataset.purpose!='normative':raise NotReady('Only normative sets contain source requirements')
     if dataset.state=='archived':raise NotReady('Archived set cannot be prepared')
+    from .object_control import metadata,excluded
+    if not metadata('area',dataset.pk)['enabled'] or set(source_ids)&excluded(dataset,'source'):raise NotReady('Inactive normative material')
     require(user,dataset.scope,'upload')
     if type(expected_revision) is not int or expected_revision!=dataset.metadata_revision:
         raise Conflict('Set revision changed')
@@ -172,7 +174,7 @@ def publish(user, set_id, release_id, expected_revision, key):
     dataset=NormativeSet.objects.select_for_update().get(pk=set_id)
     if dataset.purpose!='normative':raise NotReady('Use experience publication for lessons')
     if dataset.state=='archived':raise NotReady('Restore the set before publication')
-    require(user,dataset.scope,'publish')
+    require(user,dataset.scope,'upload' if dataset.automatic else 'publish')
     if not isinstance(key,str) or not 1<=len(key)<=128:raise ValueError('Idempotency-Key required')
     request_key=digest(['publish',user.pk,key])
     old=Command.objects.filter(idempotency_key=request_key).first()
@@ -236,6 +238,9 @@ PERMISSION={'trace.suggest':'upload','set.register':'upload','source.ingest':'up
 
 
 PERMISSION['expert.apply']='read'
+PERMISSION['normative.search']='read'
+PERMISSION['area.import']='upload'
+PERMISSION['source.identify']='upload'
 
 
 @transaction.atomic
@@ -247,7 +252,7 @@ def analyze_source(user,set_id,source_id,key):
     if source.state not in ('prepared','partial'):raise NotReady('Source structure not ready')
     if not isinstance(key,str) or not 1<=len(key)<=128:raise ValueError('Idempotency-Key required')
     c=command(user,source.normative_set,'source.analyze',digest(['analyze',user.pk,key]),
-              dict(set_id=str(set_id),source_id=str(source_id),sha256=source.sha256,extractor_version='semantic-9.1.3'))
+              dict(set_id=str(set_id),source_id=str(source_id),sha256=source.sha256,extractor_version='semantic-9.1.3',automatic_screening=source.normative_set.automatic))
     audit(user,'source.analysis_requested',source.pk)
     return c
 
@@ -282,6 +287,8 @@ def claim(worker_id, capabilities, features=()):
                 result={'reason':'attempts_exhausted'} if c.state=='failed' else {})
     for c in Command.objects.select_for_update().filter(state='pending',kind__in=capabilities).order_by('created','id'):
         if c.kind=='review.execute':
+            if c.payload.get('logging',{}).get('enabled') and 'check-log-v1' not in features:continue
+            if c.payload.get('visual_version') and c.payload['visual_version'] not in features:continue
             # Additive rollout: a new worker never takes an old pinned review,
             # and an old worker cannot take a newly planned review.
             version=c.payload.get('planning_version')
@@ -296,7 +303,8 @@ def claim(worker_id, capabilities, features=()):
             ((c.kind=='review.execute' and c.payload.get('trace_version')) or
              (c.kind=='release.prepare' and c.payload.get('curation',{}).get('links')))):
             continue  # A previous worker may finish its source analysis, never execute a newer contract.
-        if c.attempts>=c.max_attempts or not allowed(c.actor,c.normative_set.scope,PERMISSION.get(c.kind,'')):
+        permission='upload' if c.kind=='release.publish' and c.normative_set.automatic else PERMISSION.get(c.kind,'')
+        if c.attempts>=c.max_attempts or not allowed(c.actor,c.normative_set.scope,permission):
             c.state='failed';c.result={'reason':'attempts_exhausted_or_authorization_revoked'};c.save(update_fields=['state','result'])
             if c.kind=='source.ingest':SourceUpload.objects.filter(pk=c.payload['source_id']).update(state='error',result=c.result)
             if c.kind=='review.execute':
@@ -319,7 +327,7 @@ def renew(worker_id,command_id,lease):
     c=Command.objects.select_for_update().select_related('actor','normative_set__scope').get(pk=command_id)
     if (c.worker_id!=worker_id or str(c.lease)!=str(lease) or c.state!='delivering'
         or not c.lease_until or c.lease_until<=timezone.now()):raise Conflict('Stale worker lease')
-    require(c.actor,c.normative_set.scope,PERMISSION.get(c.kind,''))
+    require(c.actor,c.normative_set.scope,('upload' if c.kind=='release.publish' and c.normative_set.automatic else PERMISSION.get(c.kind,'')))
     c.lease_until=timezone.now()+timedelta(seconds=600 if c.kind in ('source.ingest','source.analyze','review.execute') else 120)
     c.save(update_fields=['lease_until'])
     return c.lease_until
@@ -413,7 +421,7 @@ def accept_event(worker_id, event_id, command_id, lease, payload, payload_hash):
     c=Command.objects.select_for_update().select_related('normative_set__scope','actor').get(pk=command_id)
     # Authorization is checked on duplicates too; a stale worker lease cannot expose new results.
     if c.worker_id!=worker_id or str(c.lease)!=str(lease):raise PermissionDenied('Wrong worker lease')
-    require(c.actor,c.normative_set.scope,PERMISSION.get(c.kind,''))
+    require(c.actor,c.normative_set.scope,('upload' if c.kind=='release.publish' and c.normative_set.automatic else PERMISSION.get(c.kind,'')))
     receipt=Receipt.objects.filter(pk=event_id).first()
     if receipt:
         if receipt.command_id!=c.pk or receipt.digest!=payload_hash:raise Conflict('Event ID collision')
@@ -421,12 +429,31 @@ def accept_event(worker_id, event_id, command_id, lease, payload, payload_hash):
     if c.state!='delivering' or c.lease_until<=timezone.now():raise Conflict('Stale or completed command')
     dataset=NormativeSet.objects.select_for_update().get(pk=c.normative_set_id)
     if payload.get('set_id')!=str(dataset.pk):raise ValueError('Wrong set')
-    if c.kind=='expert.apply' and payload.get('kind')=='expert.apply.done':
+    if c.kind=='normative.search' and payload.get('kind')=='normative.search.done':
+        if payload.get('release_id')!=c.payload['release_id']:raise Conflict('Search release changed')
+        result={'accepted':True,'entries':payload['entries'],'release_id':payload['release_id']}
+    elif c.kind=='source.identify' and payload.get('kind')=='source.identified':
+        source=SourceUpload.objects.select_for_update().get(pk=c.payload['source_id'],normative_set=dataset)
+        identity=payload['source_identity']
+        if identity.get('source_id')!=str(source.pk) or identity.get('source_sha256')!=source.sha256:raise ValueError('Source identification identity')
+        from .source_identity import project as project_identity
+        project_identity(source,identity,c.actor)
+        result={'accepted':True,'source_id':str(source.pk)}
+    elif c.kind=='area.import' and payload.get('kind')=='area.import.done':
+        from .portable_area import accept
+        result=accept(c,payload)
+    elif c.kind=='expert.apply' and payload.get('kind')=='expert.apply.done':
         from .expert import accept
         result=accept(c,payload)
     elif c.kind=='trace.suggest' and payload.get('kind')=='trace.suggest.done':
         if payload.get('set_id')!=str(dataset.pk) or payload.get('expert_validation') is not False:raise Conflict('Suggestion identity')
         result={'accepted':True,'suggestions':payload['suggestions'],'model':payload['model']}
+        if dataset.automatic:
+            from .trace_links import save as save_link
+            for n, suggestion in enumerate(payload['suggestions']):
+                data=dict(suggestion,condition={'fact':{'name':'selected_sources','in':[str(s) for s in dataset.sources.values_list('id',flat=True)]}},status='draft',reason='Автоматически выявлено LLM по нормативам области; требуется экспертная проверка.')
+                data.pop('basis_quote',None)
+                save_link(c.actor,dataset.pk,data,key=digest(['automatic-link',str(c.pk),n]))
     elif c.kind=='review.execute' and payload.get('kind')=='review.execute.done':
         from .models import KnowledgeCheck,KnowledgeFindingChunk
         job=KnowledgeCheck.objects.select_for_update().get(pk=c.payload['job_id'])
@@ -505,6 +532,8 @@ def accept_event(worker_id, event_id, command_id, lease, payload, payload_hash):
             or digest([x.digest for x in chunks])!=payload.get('candidate_digest')):
             raise NotReady('Analysis journal incomplete')
         result={'accepted':True,'summary':payload}
+        from .source_identity import project as project_identity
+        project_identity(source,payload.get('source_identity'),c.actor)
         if payload['extractor_version']=='semantic-9.1.3':
             from .profiles import activate_extracted_profiles
             activate_extracted_profiles(c,source,payload.get('profiles',[]))
@@ -574,6 +603,8 @@ def accept_event(worker_id, event_id, command_id, lease, payload, payload_hash):
     else:raise ValueError('Event does not match command')
     c.state='done';c.result=result;c.save(update_fields=['state','result'])
     Receipt.objects.create(id=event_id,command=c,digest=payload_hash,result=result)
+    from .automatic import completed
+    completed(c)
     return result
 
 
@@ -585,7 +616,8 @@ def create_snapshot(user, job_id, set_ids, versions):
         dataset=NormativeSet.objects.select_for_update().get(pk=sid)
         if dataset.purpose!='normative':raise NotReady('Normative snapshot cannot contain experience-only set')
         require(user,dataset.scope,'read')
-        if dataset.state!='ready':raise NotReady('Normative set is not available for new checks')
+        from .object_control import metadata
+        if dataset.state!='ready' or not metadata('area',dataset.pk)['enabled']:raise NotReady('Normative set is not available for new checks')
         r=dataset.active_release
         if not r or r.state!='active':raise NotReady('Set has no active release')
         selected.append(dict(set_id=str(dataset.pk),release_id=str(r.pk),manifest_hash=r.manifest_hash,

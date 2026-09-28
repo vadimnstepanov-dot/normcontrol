@@ -20,8 +20,11 @@ def links(request):
     if request.method=='POST':
         d=fields(request,{'set_id','source','target','basis','source_type','target_type','relation','description','condition',
                          'mandatory_target','confidence','status','reason'})
-        row=trace_links.save(request.user,d['set_id'],d,key=request.headers.get('Idempotency-Key'));return JsonResponse(row.payload,status=201)
-    return JsonResponse(dict(entries=[x.payload for x in dataset.trace_links.order_by('id')],
+        row=trace_links.save(request.user,d['set_id'],d,key=request.headers.get('Idempotency-Key'))
+        from .automatic import advance
+        advance(dataset,request.user)
+        return JsonResponse(row.payload,status=201)
+    return JsonResponse(dict(entries=[dict(x.payload,control=__import__('knowledge.object_control',fromlist=['metadata']).metadata('link',x.pk)) for x in dataset.trace_links.order_by('id')],
         can_edit=allowed(request.user,dataset.scope,'upload'),can_confirm=allowed(request.user,dataset.scope,'publish')))
 
 
@@ -32,7 +35,10 @@ def link(request,identity):
     if request.method=='POST':
         d=fields(request,{'expected_revision','source','target','basis','source_type','target_type','relation','description','condition',
                          'mandatory_target','confidence','status','reason'})
-        return JsonResponse(trace_links.save(request.user,row.normative_set_id,d,identity,key=request.headers.get('Idempotency-Key')).payload)
+        saved=trace_links.save(request.user,row.normative_set_id,d,identity,key=request.headers.get('Idempotency-Key'))
+        from .automatic import advance
+        advance(row.normative_set,request.user)
+        return JsonResponse(saved.payload)
     return JsonResponse(dict(row.payload,history=[dict(revision=h.revision,payload=h.payload,created=h.created.isoformat())
         for h in row.history.order_by('-revision')[:30]]))
 
