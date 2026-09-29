@@ -188,7 +188,26 @@ def apply(store,command_id,payload,authorize):
                 source=json.loads(row[0])
                 if source['sha256']!=item['sha256']:raise ValueError('Original file digest differs')
                 if item['source_id'] not in source_context_cache:source_context_cache[item['source_id']]=source_evidence(store,db,sid,item['source_id'],source,command_id)
-                card,evidence=direct_card(store,db,sid,item,source,source_context_cache[item['source_id']])
+                # Additional glossary origins belong to their own checksummed
+                # originals. Never validate a foreign paragraph against the
+                # primary source merely because its locator happens to match.
+                local_item=copy.deepcopy(item)
+                origins=local_item['card'].pop('additional_origins',[])
+                allowed_sources={c['source_id'] for c in payload['cards']}|{s['id'] for s in payload.get('source_metadata',[])}
+                for origin in origins:
+                    origin_id=origin.get('source_id')
+                    if origin_id not in allowed_sources:raise ValueError('Additional origin outside imported sources')
+                    origin_row=db.execute("SELECT payload FROM records WHERE id=? AND version=1 AND set_id=? AND kind='source_revision'",(origin_id,sid)).fetchone()
+                    if not origin_row:raise ValueError('Additional original unavailable')
+                    original=json.loads(origin_row[0])
+                    if origin.get('source_sha256')!=original['sha256']:raise ValueError('Additional original digest differs')
+                    if origin_id not in source_context_cache:source_context_cache[origin_id]=source_evidence(store,db,sid,origin_id,original,command_id)
+                    fragment=source_context_cache[origin_id].get(origin.get('locator'))
+                    verbatim=origin.get('verbatim')
+                    if not fragment or not isinstance(verbatim,str) or not verbatim or verbatim not in fragment['text']:raise ValueError('Additional origin text differs')
+                    rebind_citations(origin,source_context_cache[origin_id],original['sha256'])
+                card,evidence=direct_card(store,db,sid,local_item,source,source_context_cache[item['source_id']])
+                if origins:card['additional_origins']=origins
                 card['ambiguities']=list(dict.fromkeys([*card.get('ambiguities',[]),'Импорт JSON: необходима экспертная сверка формулировки и применимости.']))
                 state=dict(card=card,base_ref=[item['base_ids'][0],1],extra_base_refs=[],source_revision=[item['source_id'],1],status='unreviewed',actor_id=actor,reason='Импорт JSON непосредственно из проверенного оригинала; требуется экспертная сверка.',action='create')
                 store.put_record(sid,'expert_card',item['id'],1,state,refs=[state['base_ref']],_db=db)

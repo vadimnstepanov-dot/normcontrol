@@ -139,7 +139,7 @@ def submit(user,identity,data,key):
     if action=='edit':edited(first.payload,data['patch'])
     payload=dict(set_id=str(dataset.pk),source_id=str(first.source_id),actor_id=user.pk,action=action,
         cards=[dict(id=str(x.pk),base_id=str(x.base_id),revision=x.revision) for x in cards],intent_digest=intent)
-    for name in ('reason','patch','parts','description','acknowledge_questions','split_logic','resolution_reason',
+    for name in ('reason','patch','parts','description','acknowledge_questions','split_logic','resolution_reason','review_import_completeness',
                  'refinement_kind','profile_id','condition','basis_index'):
         if name in data:payload[name]=data[name]
     if action=='confirm':

@@ -28,11 +28,12 @@ class UnifiedLaunchTests(TestCase):
     def launch(self,directions=None,key=None):
         return start(self.user,self.batch.pk,directions or ['sto','logic','language'],[str(self.rules.pk)],None,key or uuid.uuid4())
 
-    def claim(self):return services.claim('test-v2',['review.execute','trace.suggest'],['context-budget-v4','visual-tail-v1'])
+    def claim(self):return services.claim('test-v2',['review.execute','trace.suggest'],['context-budget-v5','visual-tail-v1'])
 
     def test_planning_version_routes_new_jobs_and_preserves_legacy_delivery(self):
         job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))
         self.assertIsNone(services.claim('old',['review.execute','trace.suggest']))
+        self.assertIsNone(services.claim('v4',['review.execute','trace.suggest'],['context-budget-v4','visual-tail-v1']))
         c.refresh_from_db();self.assertEqual(c.attempts,0)
         self.assertIsNotNone(self.claim())
 
@@ -48,6 +49,14 @@ class UnifiedLaunchTests(TestCase):
         c.refresh_from_db();self.assertEqual(c.attempts,0)
         self.assertIsNotNone(self.claim())
 
+    def test_claim_shows_preparation_without_fabricating_progress(self):
+        job=self.launch(['sto']);original=dict(job.progress)
+        self.assertIsNone(services.claim('unaware',['review.execute'],['context-budget-v4']))
+        job.refresh_from_db();self.assertEqual(job.state,'queued')
+        claim=self.claim();self.assertIsNotNone(claim)
+        job.refresh_from_db();self.assertEqual(job.state,'running');self.assertEqual(job.progress,original)
+        self.assertIsNone(job.progress['total'])
+
     def test_v3_running_check_blocks_v4_and_preserves_its_payload(self):
         job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))
         c.payload['planning_version']='context-budget-v3';c.payload.pop('visual_version',None)
@@ -58,6 +67,14 @@ class UnifiedLaunchTests(TestCase):
         start(self.user,second.pk,['sto'],[str(self.rules.pk)],None,uuid.uuid4())
         self.assertIsNone(self.claim())
         c.refresh_from_db();self.assertEqual(c.payload,original);self.assertEqual(c.state,'delivering')
+
+    def test_v5_never_claims_or_replans_saved_v4_job(self):
+        job=self.launch(['sto']);c=Command.objects.get(payload__job_id=str(job.pk))
+        c.payload['planning_version']='context-budget-v4';c.save(update_fields=['payload'])
+        before=dict(c.payload)
+        self.assertIsNone(self.claim())
+        self.assertIsNotNone(services.claim('v4',['review.execute','trace.suggest'],['context-budget-v4','visual-tail-v1']))
+        c.refresh_from_db();self.assertEqual(c.payload,before)
 
     def legacy_claim(self):
         return self.client.post('/normcontol/worker/claim/',{'worker':'desktop'},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token).json()

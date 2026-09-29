@@ -2,7 +2,7 @@
 import json
 from .store import checksum,encode
 
-VERSION='normative-wire-v3'
+VERSION='normative-wire-v5'
 POLICY='''Представление transport использует справочники без сокращения текста.
 documents — строки с колонками document_columns; id строки является block_id для
 цитаты. structure_ref раскрывается в document_structures: там документ, заголовки,
@@ -11,6 +11,11 @@ normative_contexts, normative structure_ref — в normative_structures. Все 
 исключения и зависимости необходимо учитывать совместно с точным текстом нормы.
 В completeness gaps с reason_ref раскрываются по gap_reasons. Неизвестность и
 непрочитанные области сохраняются; это не разрешение делать глобальные выводы.
+row в строке documents — номер строки таблицы; header_ref раскрывается в
+document_headers и сохраняет путь заголовков ячейки. applicability_ref раскрывается
+в applicability_contexts. source_ref обозначает неизменный первоисточник из sources.
+Нормативный exact_text сохранён дословно; поисковые копии и контрольные хеши не нужны
+для решения. Отсутствие служебного хеша не означает отсутствие условия или нормы.
 Указывай только id требований и id строк documents; справочники не являются
 доказательствами исполнения. Кратко объясняй решение, избегая повтора нормы.'''
 
@@ -39,11 +44,13 @@ def payload(original):
     blocks={b['id']:f'B{i+1:03d}' for i,b in enumerate(value.get('documents',[]))}
     if len(blocks)!=len(value.get('documents',[])):raise ValueError('Duplicate document block')
     doc_structures=Pool('S');norm_structures=Pool('N');contexts=Pool('C')
+    headers=Pool('H');sources=Pool('F');applicability=Pool('A')
     packed=[]
     for block in value.get('documents',[]):
-        structure={k:v for k,v in block.items() if k not in ('id','text','locator','location') and v not in (None,[],{})}
+        structure={k:v for k,v in block.items() if k not in ('id','text','locator','location','row','header_path') and v not in (None,[],{})}
         if 'document' in structure:structure['document']=documents[structure['document']]
-        packed.append([blocks[block['id']],block['text'],doc_structures.add(structure),block.get('locator','')])
+        packed.append([blocks[block['id']],block['text'],doc_structures.add(structure),block.get('locator',''),
+                       block.get('row'),headers.add(block['header_path']) if block.get('header_path') else None])
     # Fields describing human approval, disk locations and record hashes are
     # enforced by the runner; they are not instructions or evidence for the LLM.
     administrative={'profile_versions','execution_issues','issues','publication_trust','curation_ref','lineage',
@@ -51,13 +58,27 @@ def payload(original):
     for row in value['obligations']:
         row['id']=aliases[row['id']]
         for key in administrative:row.pop(key,None)
+        atom=row.get('atom',{})
+        if isinstance(atom,dict):
+            for key in ('id','requirement_ref'):atom.pop(key,None)
+            # These are parser fingerprints and offsets, never normative text.
+            # Keep quotes, routes, conditions, exceptions and unknown fields intact.
+            for citation in atom.get('citations',[]):
+                for key in ('context_hash','start','end'):citation.pop(key,None)
+                if 'source_sha256' in citation:citation['source_ref']=sources.add(citation.pop('source_sha256'))
+        if isinstance(row.get('applicability'),dict):
+            fact=row.pop('applicability');fact.pop('facts_hash',None)
+            row['applicability_ref']=applicability.add(fact)
         if row.get('document_id') in documents:row['document_id']=documents[row['document_id']]
         for key in ('source_documents','target_documents'):
             if key in row:row[key]=[documents.get(d,d) for d in row[key]]
         if isinstance(row.get('context'),list) and all(isinstance(f,dict) for f in row['context']):
             refs=[]
             for fragment in row.pop('context'):
-                fragment={k:v for k,v in fragment.items() if k not in ('context_hash','parse_ref','source_revision')}
+                fragment={k:v for k,v in fragment.items() if k not in ('context_hash','parse_ref','search_text')}
+                # Retain source identity (including revision) through a compact alias.
+                for key in ('ref','source_revision'):
+                    if key in fragment:fragment[key+'_alias']=sources.add(fragment.pop(key))
                 structure=fragment.pop('structure',None)
                 if isinstance(structure,dict):
                     structure={k:v for k,v in structure.items() if k not in ('search_text','source_sha256','source_locator','word_render_pdf','numbering_evidence','numbering_method')}
@@ -85,8 +106,9 @@ def payload(original):
     # Stable normative/document prefix lets check/verify share the same input.
     # Unlike canonical hashing, transport serialization preserves this order.
     result=dict(transport=VERSION,normative_structures=norm_structures.items,normative_contexts=contexts.items,
-        obligations=value['obligations'],document_structures=doc_structures.items,
-        document_columns=['id','text','structure_ref','locator'],documents=packed)
+        obligations=value['obligations'],document_structures=doc_structures.items,document_headers=headers.items,
+        applicability_contexts=applicability.items,sources=sources.items,
+        document_columns=['id','text','structure_ref','locator','row','header_ref'],documents=packed)
     result.update({k:v for k,v in value.items() if k not in ('obligations','documents','stage','proposed')})
     if 'stage' in value:result['stage']=value['stage']
     if 'proposed' in value:result['proposed']=value['proposed']

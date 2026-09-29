@@ -29,7 +29,7 @@ class LlamaClient:
             self.context = min(int(context), int(props['default_generation_settings']['n_ctx']))
             if not 256 <= output_tokens < self.context - 1024: raise ValueError('Output/context budget')
             self.signature = checksum(dict(props=props, model=self.model, temperature=0, thinking=False,wire_version=WIRE_VERSION))
-        self._counts = {}
+        self._counts = {};self._schema_counts = {}
 
     def http(self, path, value=None, timeout=None):
         headers = {'Content-Type': 'application/json'}
@@ -41,11 +41,38 @@ class LlamaClient:
             with call(value,dict(model=self.model,context=self.context,output_tokens=self.output_tokens,timeout=self.timeout)) as record:
                 with urllib.request.urlopen(req,timeout=timeout or self.timeout) as response:result=json.load(response)
                 record(result);return result
+        if path in ('/apply-template','/tokenize'):
+            return self.token_http(path,value,headers,timeout or self.timeout)
         with urllib.request.urlopen(req, timeout=timeout or self.timeout) as response:result=json.load(response)
         if path=='/props':
             from .check_log import emit
             emit('model_configuration',result)
         return result
+
+    def token_http(self,path,value,headers,timeout):
+        """Reuse TLS for read-only token accounting; never retry a generation."""
+        import http.client,ssl,threading,io
+        parsed=urllib.parse.urlsplit(self.endpoint)
+        if not hasattr(self,'_token_lock'):self._token_lock=threading.Lock()
+        with self._token_lock:
+            for attempt in range(2):
+                connection=getattr(self,'_token_connection',None)
+                if connection is None:
+                    kind=http.client.HTTPSConnection if parsed.scheme=='https' else http.client.HTTPConnection
+                    kwargs={'timeout':timeout}
+                    if parsed.scheme=='https':kwargs['context']=ssl.create_default_context()
+                    connection=kind(parsed.hostname,parsed.port,**kwargs);self._token_connection=connection
+                try:
+                    connection.request('POST',parsed.path.rstrip('/')+path,body=encode(value).encode(),headers=headers)
+                    response=connection.getresponse();body=response.read()
+                    if response.status>=400:
+                        raise urllib.error.HTTPError(self.endpoint+path,response.status,response.reason,response.headers,io.BytesIO(body))
+                    return json.loads(body)
+                except (http.client.RemoteDisconnected,BrokenPipeError,ConnectionResetError):
+                    connection.close();self._token_connection=None
+                    if attempt:raise
+                except Exception:
+                    connection.close();self._token_connection=None;raise
 
     def request(self, payload):
         payload,_=wire_payload(payload)
@@ -71,6 +98,12 @@ class LlamaClient:
                 schema['properties']['links']['items']['properties'][key]=dict(type='string',enum=[c['id'] for c in payload['cards']])
             for key in ('source_type','target_type'):
                 schema['properties']['links']['items']['properties'][key]=dict(type='string',enum=payload['allowed_document_types'])
+        if payload.get('stage')=='document_facts':
+            from .document_facts import POLICY as FACT_POLICY
+            policy=FACT_POLICY
+            schema=obj({'facts':dict(type='array',items=obj({'name':dict(type='string',enum=list(payload['requested'])),
+                'values':dict(type='array',items=text),'complete':dict(type='boolean'),'confidence':dict(type='number'),
+                'reason':text,'evidence':dict(type='array',items=obj({'block_id':text,'quote':text}))}))})
         if payload.get('stage')=='document_classify':
             from .document_types import POLICY as CLASSIFY_POLICY
             policy=CLASSIFY_POLICY
@@ -96,7 +129,13 @@ class LlamaClient:
             req = self.request(payload)
             template = self.http('/apply-template', {'messages': req['messages'], 'chat_template_kwargs': {'enable_thinking': False}})['prompt']
             tokens = len(self.http('/tokenize', {'content': template, 'add_special': False})['tokens'])
-            tokens += len(self.http('/tokenize', {'content': encode(req['response_format']), 'add_special': False})['tokens'])
+            schema_key=checksum(req['response_format'])
+            schema_counts=getattr(self,'_schema_counts',None)
+            if schema_counts is None:self._schema_counts={};schema_counts=self._schema_counts
+            if schema_key not in schema_counts:
+                if len(schema_counts)>128:schema_counts.clear()
+                schema_counts[schema_key]=len(self.http('/tokenize', {'content': encode(req['response_format']), 'add_special': False})['tokens'])
+            tokens += schema_counts[schema_key]
             if len(self._counts) > 1024: self._counts.clear()
             self._counts[key] = tokens
         return self._counts[key]

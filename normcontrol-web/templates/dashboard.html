@@ -27,10 +27,10 @@
 {% if selected_batch %}
 {% if pending_knowledge %}<section class="panel form-panel"><span class="eyebrow">СЛЕДУЮЩИЙ ЭТАП</span><h2>Соответствие СТО · в очереди</h2><p class="muted">Нормативная база выбрана и закреплена. Проверка СТО начнётся после текущих этапов; ниже показан их фактический ход.</p><a class="button secondary" href="{% url 'knowledge-check-monitor' pending_knowledge.pk %}">Нормативный этап и его результаты →</a></section>{% endif %}
 {% if selected_knowledge %}
-<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=915">
+<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=20260929-template-1">
 <div id="current-review"><h2>{{ selected_batch.name }}</h2>{% include 'knowledge_check_body.html' %}</div>
-<script defer src="{% static 'knowledge-matrix.js' %}?v=20260928-visual-tail"></script>
-<script defer src="{% static 'knowledge-check.js' %}?v=20260928-visual-tail-dashboard"></script>
+<script defer src="{% static 'knowledge-matrix.js' %}?v=20260929-activity-3"></script>
+<script defer src="{% static 'knowledge-check.js' %}?v=20260929-template-1"></script>
 {% else %}
 <section class="panel live-workspace" id="current-review"><div id="review-progress" data-url="{% url 'batch-status' selected_batch.pk %}" data-wake-url="{% url 'batch-wake' selected_batch.pk %}" data-can-manage="{% if can_manage_selected %}1{% else %}0{% endif %}" data-feedback-url="{% url 'batch-feedback' selected_batch.pk %}" data-disposition-url="{% url 'finding-disposition' selected_batch.pk '__FINDING__' %}">
 <div class="panel-heading live-heading"><div><span class="eyebrow">ТЕКУЩАЯ ПРОВЕРКА</span><h2>{{ selected_batch.name }}</h2><p class="muted">{% for doc in selected_batch.documents.all %}{% if not forloop.first %} · {% endif %}{{ doc.name }}{% endfor %}</p></div><span class="badge {{ selected_batch.status }}" id="review-state">{{ selected_batch.get_status_display }}</span></div>

@@ -1,9 +1,9 @@
 {% extends 'base.html' %}{% load static %}
 {% block title %}Нормативный контроль{% endblock %}
 {% block content %}
-{% if job.batch.logging_enabled %}<div class="notice"><span>Диагностический журнал включён. Выгрузка содержит текст документов и ответы модели.</span><a class="button secondary" href="{% url 'batch-check-log' job.batch.pk %}">▤ Лог проверки · Excel</a></div>{% endif %}<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=915">
+{% if job.batch.logging_enabled %}<div class="notice"><span>Диагностический журнал включён. Выгрузка содержит текст документов и ответы модели.</span><a class="button secondary" href="{% url 'batch-check-log' job.batch.pk %}">▤ Лог проверки · Excel</a></div>{% endif %}<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=20260929-template-1">
 <a class="back-link" href="{% url 'batch' job.batch_id %}">← К пакету</a><div class="page-heading"><div><span class="eyebrow">НОРМОКОНТРОЛЬ / НОВАЯ БАЗА</span><h1>{{ job.batch.name }}</h1><p>Проверка по выбранным нормативным выпускам. Непроверенные требования и ошибки показаны отдельно от нарушений.</p></div></div>
 {% include 'knowledge_check_body.html' %}
-<script defer src="{% static 'knowledge-matrix.js' %}?v=20260928-visual-tail"></script>
-<script defer src="{% static 'knowledge-check.js' %}?v=20260928-visual-tail"></script>
+<script defer src="{% static 'knowledge-matrix.js' %}?v=20260929-activity-3"></script>
+<script defer src="{% static 'knowledge-check.js' %}?v=20260929-template-1"></script>
 {% endblock %}

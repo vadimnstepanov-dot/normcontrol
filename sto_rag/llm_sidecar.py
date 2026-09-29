@@ -133,8 +133,20 @@ def latest_v2_timing(last_ended):
         path=Path('\\\\wsl.localhost\\'+distro+'\\opt\\normcontrol\\data\\llm-telemetry.json')
     else:path=Path(os.getenv('NORMCONTROL_KNOWLEDGE_DATA','/data'))/'llm-telemetry.json'
     try:
-        if path.stat().st_size>4096:return None
-        item=json.loads(path.read_text(encoding='utf8'))
+        try:
+            if path.stat().st_size>4096:return None
+            text=path.read_text(encoding='utf8')
+        except PermissionError:
+            if os.name!='nt' or configured:raise
+            # Container-owned mode-0600 files can be unreadable over Windows UNC.
+            # One bounded read per minute; never scan the DB or query the model.
+            result=subprocess.run(['wsl.exe','-d',distro,'--','python3','-c',
+                "from pathlib import Path; p=Path('/opt/normcontrol/data/llm-telemetry.json'); print(p.read_text(encoding='utf-8') if p.stat().st_size<=4096 else '')"],
+                capture_output=True,text=True,encoding='utf-8',timeout=5,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if result.returncode or len(result.stdout)>4096:return None
+            text=result.stdout
+        item=json.loads(text)
         if item.get('source')!='knowledge-v2' or not isinstance(item.get('stage'),str):return None
         for key in ('ended','prompt_n','predicted_n','prefill_tps','generation_tps'):
             value=item.get(key)
@@ -142,7 +154,7 @@ def latest_v2_timing(last_ended):
             if type(value) not in (int,float) or not math.isfinite(value) or value<0:return None
         if item['ended']<=last_ended:return None
         return {k:item.get(k) for k in ('source','ended','stage','prompt_n','predicted_n','prefill_tps','generation_tps')}
-    except (OSError,ValueError,TypeError):return None
+    except (OSError,ValueError,TypeError,subprocess.SubprocessError):return None
 
 
 def bucket(item):

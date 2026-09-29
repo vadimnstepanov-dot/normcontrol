@@ -17,7 +17,7 @@ class SourceIdentityTests(TestCase):
         return self.client.post(f'/normcontol/api/v2/normative-sets/{self.area.pk}/sources/{self.source.pk}/identity/',json.dumps(dict(expected_revision=revision,fields=fields,reason='Сверено по титульному листу')),content_type='application/json')
     def test_edit_display_history_file_unchanged_and_reanalysis_preserves(self):
         self.assertEqual(self.post(1,short_title='Порядок проектирования',full_title='Полное название',approval_date='24.08.2026',approval_document_number='100/р').status_code,200)
-        self.source.refresh_from_db();self.assertEqual(self.source.display_name,'Порядок проектирования · утв. 24.08.2026')
+        self.source.refresh_from_db();self.assertEqual(self.source.display_name,'Порядок проектирования')
         auto=dict(source_sha256='a'*64,fields={k:dict(value='Новое машинное значение',citations=[]) for k in FIELDS},confidence=.8,status='identified')
         project(self.source,auto,self.owner);self.source.refresh_from_db()
         self.assertEqual(self.source.identification['fields']['short_title']['value'],'Порядок проектирования')

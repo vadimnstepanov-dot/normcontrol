@@ -56,6 +56,17 @@ class SidecarTests(unittest.TestCase):
                 self.assertIsNone(llm_sidecar.latest_v2_timing(0))
 
     @unittest.skipUnless(os.name=='nt','Windows console integration')
+    def test_v2_counter_permission_fallback_reads_only_bounded_file(self):
+        sample=dict(source='knowledge-v2',stage='check',ended=123,prompt_n=100,predicted_n=30,prefill_tps=900,generation_tps=60)
+        with patch.dict(os.environ,{'NORMCONTROL_KNOWLEDGE_TELEMETRY':''}),patch.object(Path,'stat',side_effect=PermissionError()),patch.object(llm_sidecar.subprocess,'run') as read:
+            read.return_value=type('Result',(),dict(returncode=0,stdout=json.dumps(sample)))()
+            self.assertEqual(llm_sidecar.latest_v2_timing(0),sample)
+            self.assertEqual(read.call_args.kwargs['timeout'],5)
+            self.assertNotIn('llama',str(read.call_args.args))
+            read.return_value=type('Result',(),dict(returncode=1,stdout=''))()
+            self.assertIsNone(llm_sidecar.latest_v2_timing(0))
+
+    @unittest.skipUnless(os.name=='nt','Windows console integration')
     def test_windows_graceful_shutdown_isolated_console(self):
         with tempfile.TemporaryDirectory() as folder:
             ready=Path(folder)/'ready';stopped=Path(folder)/'stopped'

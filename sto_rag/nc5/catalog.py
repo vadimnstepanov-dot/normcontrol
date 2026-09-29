@@ -189,4 +189,7 @@ def activate_catalog(version):
         write(DATA/'catalog-current.json',{'version':version})
 
 def load_catalog(version=None):
+    if version == 'non-normative-empty-v1' or (version is None and not (DATA/'catalog-current.json').exists()):
+        return {'version':'non-normative-empty-v1','profiles':[], 'cards':[], 'sources':[],
+                'limitations':['Старый нормативный каталог отсутствует; доступна только ненормативная обработка. СТО выполняется отдельным конвейером knowledge-v2.']}
     version=version or read(DATA/'catalog-current.json')['version'];return read(DATA/'catalogs'/version/'catalog.json')

@@ -51,8 +51,11 @@ def prepare(store, command_id, payload, encoder, vector, authorize):
             # extraction marker or statement of full source coverage is created.
             material=json.loads((store.directory/'area-imports'/(str(uuid.UUID(pin['command_id']))+'.json')).read_text(encoding='utf8'))
             if checksum(material)!=result.get('digest'):raise Conflict('Pinned import material differs')
+            if pin.get('reference_only'):
+                if pin.get('source_sha256')!=versions[-1][2]['sha256'] or any(c['source_id']==source_id for c in material):raise Conflict('Reference-only source differs')
             semantic_runs[source_id]='independent_import'
-            semantic_cards.update(c['base_id'] for c in material if c['source_id']==source_id)
+            pinned_bases={c['base_id'] for c in payload['curation']['cards']}
+            semantic_cards.update(c['base_id'] for c in material if c['source_id']==source_id and c['base_id'] in pinned_bases)
             continue
         # A complete extractor run is required, including its uncertainty ledger.
         folder=store.directory/'analyses'

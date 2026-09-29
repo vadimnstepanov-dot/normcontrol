@@ -142,6 +142,12 @@ def prepare_selected_sources(user,set_id,source_ids,expected_revision,key,mode='
     for source in sources:
         imported=Command.objects.filter(normative_set=dataset,kind='area.import',state='done').order_by('-created').first()
         direct=[c for c in imported.payload.get('cards',[]) if c['source_id']==str(source.pk)] if imported else []
+        if imported and not direct and str(source.pk) in {s['id'] for s in imported.payload.get('source_metadata',[])}:
+            # Approval acts and implementation plans may contain no document
+            # obligations. Keep their originals without fabricating extraction.
+            entries=[row for chunk in imported.analysis_chunks.order_by('sequence') for row in chunk.entries]
+            imports[str(source.pk)]=dict(command_id=str(imported.pk),material_digest=digest(entries),reference_only=True,source_sha256=source.sha256)
+            extractor_versions.add('portable-source-evidence-v1');continue
         if direct and all(c.get('evidence_mode')=='source_fragments' for c in direct):
             entries=[row for chunk in imported.analysis_chunks.order_by('sequence') for row in chunk.entries]
             imports[str(source.pk)]=dict(command_id=str(imported.pk),material_digest=digest(entries))
@@ -302,7 +308,7 @@ def claim(worker_id, capabilities, features=()):
             # Additive rollout: a new worker never takes an old pinned review,
             # and an old worker cannot take a newly planned review.
             version=c.payload.get('planning_version')
-            if version not in (None,'context-budget-v3','context-budget-v4'):continue
+            if version not in (None,'context-budget-v3','context-budget-v4','context-budget-v5'):continue
             if version is None:
                 if features:continue
             elif version not in features:continue
@@ -328,6 +334,9 @@ def claim(worker_id, capabilities, features=()):
         c.state='delivering';c.attempts+=1;c.worker_id=worker_id;c.lease=uuid.uuid4();c.lease_until=now+timedelta(seconds=600 if c.kind in ('source.ingest','source.analyze','review.execute') else 120)
         c.save(update_fields=['state','attempts','worker_id','lease','lease_until'])
         if c.kind=='source.ingest':SourceUpload.objects.filter(pk=c.payload['source_id']).update(state='processing')
+        if c.kind=='review.execute':
+            # Accepted preparation is active work even before the first model batch.
+            KnowledgeCheck.objects.filter(pk=c.payload['job_id'],state='queued').update(state='running')
         return dict(command_id=str(c.pk),kind=c.kind,payload=c.payload,lease=str(c.lease),lease_until=c.lease_until.isoformat())
     return None
 
@@ -340,6 +349,8 @@ def renew(worker_id,command_id,lease):
     require(c.actor,c.normative_set.scope,('upload' if c.kind=='release.publish' and c.normative_set.automatic else PERMISSION.get(c.kind,'')))
     c.lease_until=timezone.now()+timedelta(seconds=600 if c.kind in ('source.ingest','source.analyze','review.execute') else 120)
     c.save(update_fields=['lease_until'])
+    if c.kind=='review.execute':
+        KnowledgeCheck.objects.filter(pk=c.payload['job_id'],state='queued').update(state='running')
     return c.lease_until
 
 

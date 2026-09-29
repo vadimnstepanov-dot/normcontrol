@@ -5,3 +5,5 @@
 .na-glossary-title{border:0;background:transparent;color:var(--accent);padding:0;text-align:left;font:inherit;font-weight:650;cursor:pointer}.na-glossary-inactive{background:rgba(160,175,200,.06)}.na-glossary-inactive .na-text{color:var(--muted)}.na-badge{display:inline-block;padding:4px 9px;border:1px solid rgba(80,215,175,.3);border-radius:7px;color:var(--green);font-size:.8rem}.na-badge.inactive{color:var(--muted);border-color:var(--line);background:rgba(160,175,200,.07)}.na-conflict{color:var(--amber,#edc37a);font-size:.8rem}
 
 .na-source-actions{display:flex;flex-direction:column;gap:.45rem;min-width:110px;max-width:150px}.na-source-actions .button{padding:.5rem .7rem}.na-table td small{display:block;margin-top:.4rem;opacity:.7}
+
+.na-requirement-status{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:130px}.na-requirement-status .na-confirm{padding:6px 10px;font-size:.85rem}.na-requirement-status small{max-width:220px;color:var(--muted)}.na-requirement-status .button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}

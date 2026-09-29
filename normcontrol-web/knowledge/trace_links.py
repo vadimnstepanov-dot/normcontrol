@@ -1,5 +1,5 @@
 """Editable, versioned configuration; release preparation pins and validates it locally."""
-import uuid
+import uuid,copy
 from django.db import transaction
 from .models import NormativeLink,NormativeLinkRevision,NormativeSet,ExpertCard,Command,DocumentProfile
 from .access import require
@@ -31,6 +31,9 @@ def save(user,set_id,data,identity=None,key=None):
     if any(c.pending_id and c.pending.state in ('pending','delivering') for c in cards.values()):raise Conflict('Card edit pending')
     value={k:data[k] for k in ('source','target','basis','source_type','target_type','relation','description','condition',
                                   'mandatory_target','confidence','status','reason')}
+    for field in ('basis_card_ids','semantic_status','execution_hint','evidence_contract','normative_basis'):
+        if field in data:value[field]=copy.deepcopy(data[field])
+        elif row and field in row.payload:value[field]=copy.deepcopy(row.payload[field])
     if len(value['reason'].strip())<20:raise ValueError('Explain normative relation in at least 20 characters')
     value.update(id=str(row.pk) if row else str(uuid.uuid4()),revision=row.revision+1 if row else 1,pins=pins(user,cards))
     validate_link(value)

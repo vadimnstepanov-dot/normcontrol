@@ -1,5 +1,8 @@
 """Compare complete-document packing with grouped exhaustive section passes."""
 from .store import checksum
+from bisect import bisect_left
+
+VERSION='context-budget-v5'
 
 def plan(rows,blocks,client,scope,max_group=8):
     from .review import request
@@ -9,67 +12,99 @@ def plan(rows,blocks,client,scope,max_group=8):
     ordered=sorted(rows,key=lambda r:(str(r.get('source_revision','')),str(r.get('requirement_ref',r['id']))))
     limit=max(1,min(max_group,client.output_tokens//128 or 1))
     reserve=2*client.output_tokens+512
-    def fits(group,evidence):
+    fit_cache={}
+    budget=client.context-reserve
+    weights=[0]
+    for block in blocks:weights.append(weights[-1]+len(block['text'])+40+len(str(block.get('header_path',[]))))
+    def count(group,evidence):
+        key=(tuple(r['id'] for r in group),tuple(b['id'] for b in evidence))
+        if key in fit_cache:return fit_cache[key]
         measured=dict(scope,part=999999,parts=999999,submitted_ids=[b['id'] for b in evidence],full_text=False)
-        return client.count(request(group,evidence,measured))+reserve<=client.context
+        fit_cache[key]=client.count(request(group,evidence,measured))
+        return fit_cache[key]
+    def fits(group,evidence):return count(group,evidence)<=budget
     built={}
-    def build(group):
+    def build(group,call_limit=None):
         key=tuple(r['id'] for r in group)
-        if key not in built:built[key]=build_uncached(group)
+        if key not in built:
+            result=build_uncached(group,call_limit)
+            if result is None:return None  # Dominated candidate, never a partial plan.
+            built[key]=result
         return built[key]
-    def build_uncached(group):
+    def build_uncached(group,call_limit=None):
+        if fits(group,blocks):
+            complete=dict(scope,part=0,parts=1,submitted_ids=[b['id'] for b in blocks],full_text=True)
+            packet=request(group,blocks,complete)
+            return [dict(id=checksum(packet),payload=packet)],[]
         if not fits(group,[]):
             if len(group)==1:return [],list(group)
             mid=len(group)//2;left,lf=build(group[:mid]);right,rf=build(group[mid:]);return left+right,lf+rf
-        chunks=[];start=0;previous=None
+        chunks=[];start=0
         while start<len(blocks):
-            # Start near the preceding capacity instead of re-tokenizing a huge
-            # remaining document in every binary search. Every final fit is exact.
-            end=start;low=start+1;high=len(blocks)
-            if previous:
-                probe=min(high,start+previous)
-                if fits(group,blocks[start:probe]):end=probe;low=probe+1
-                else:high=probe-1
-            while low<=high:
-                mid=(low+high)//2
-                if fits(group,blocks[start:mid]):end=mid;low=mid+1
-                else:high=mid-1
+            if call_limit is not None and len(chunks)>=call_limit:return None
+            # Interpolate a candidate using measured endpoints and cheap text
+            # weights. Weights choose only the probe: exact template counts
+            # always decide fit, including the last accepted boundary.
+            end=start;high=len(blocks)
+            low_tokens=count(group,[]);high_tokens=count(group,blocks[start:high])
+            if high_tokens<=budget:end=high
+            else:
+                while high-end>1:
+                    fraction=max(.01,min(.99,(budget-low_tokens)/max(1,high_tokens-low_tokens)))
+                    target=weights[end]+fraction*(weights[high]-weights[end])
+                    mid=max(end+1,min(high-1,bisect_left(weights,target,end+1,high)))
+                    tokens=count(group,blocks[start:mid])
+                    if tokens<=budget:end=mid;low_tokens=tokens
+                    else:high=mid;high_tokens=tokens
             if end==start:
                 if len(group)==1:return [],list(group)
                 mid=len(group)//2;left,lf=build(group[:mid]);right,rf=build(group[mid:]);return left+right,lf+rf
             boundaries=[i for i in range(start+1,end) if blocks[i].get('headings')!=blocks[i-1].get('headings')]
             if end<len(blocks) and boundaries and boundaries[-1]>start+(end-start)//2:end=boundaries[-1]
-            chunks.append(blocks[start:end]);previous=end-start;start=end
+            chunks.append(blocks[start:end]);start=end
         batches=[]
         for index,evidence in enumerate(chunks):
             complete=dict(scope,part=index,parts=len(chunks),submitted_ids=[b['id'] for b in evidence],full_text=len(chunks)==1)
             payload=request(group,evidence,complete)
             batches.append(dict(id=checksum(payload),payload=payload))
         return batches,[]
-    # Strategy A: maximum grouped pass. Strategy B: prefer the whole document
-    # and choose the largest obligation group that fits, without splitting it.
-    # Select fewer calls; when equal, select less repeated input.
-    bulk=[];bulk_failed=[]
-    for start in range(0,len(ordered),limit):
-        tasks,failed=build(ordered[start:start+limit]);bulk.extend(tasks);bulk_failed.extend(failed)
-    full=[];full_failed=[];start=0
-    while start<len(ordered):
-        available=min(limit,len(ordered)-start);best=0;low=1;high=available
-        while low<=high:
-            middle=(low+high)//2
-            if fits(ordered[start:start+middle],blocks):best=middle;low=middle+1
-            else:high=middle-1
-        size=best or available;tasks,failed=build(ordered[start:start+size]);full.extend(tasks);full_failed.extend(failed);start+=size
-    def cost(option):
-        tasks,failed=option
-        return len(failed),len(tasks),sum(len(b['payload']['documents']) for b in tasks)
-    return min(((bulk,bulk_failed),(full,full_failed)),key=cost)
+    # Optimize all contiguous group sizes, not just the largest group and the
+    # whole-document special case. Filling the context with norms can otherwise
+    # leave only a few cells per request and create dozens of document passes.
+    # DP's lexicographic cost first preserves executable coverage, then minimizes
+    # actual requests, then repeated document text. Every candidate is measured
+    # with the same template/tokenizer used for inference.
+    if len(ordered)<=limit and fits(ordered,blocks):return build(ordered)
+    best={len(ordered):((0,0,0),[],[])}
+    for start in range(len(ordered)-1,-1,-1):
+        winner=None
+        # Establish a finite bound with single-atom groups first. Large groups
+        # are abandoned as soon as their partial cost already exceeds it.
+        for size in range(1,min(limit,len(ordered)-start)+1):
+            tail_cost,tail_tasks,tail_failed=best[start+size]
+            # At least one call is necessary for a nonempty executable group.
+            # Equal calls can still improve repeated text, so do not skip ties.
+            if winner and winner[0][0]==0 and tail_cost[0]==0 and 1+tail_cost[1]>winner[0][1]:continue
+            group=ordered[start:start+size]
+            if size>1 and not fits(group,[]):continue  # DP already considers its subdivisions.
+            call_limit=winner[0][1]-tail_cost[1] if winner and winner[0][0]==0 and tail_cost[0]==0 else None
+            result=build(group,call_limit)
+            if result is None:continue
+            tasks,failed=result
+            repeated=sum(sum(len(b['text']) for b in t['payload']['documents']) for t in tasks)
+            cost=(len(failed)+tail_cost[0],len(tasks)+tail_cost[1],repeated+tail_cost[2])
+            if winner is None or cost<winner[0]:winner=(cost,tasks+tail_tasks,failed+tail_failed)
+            if cost==(0,(len(ordered)-start+limit-1)//limit,
+                         sum(len(b['text']) for b in blocks)*((len(ordered)-start+limit-1)//limit)):break
+        best[start]=winner
+    return best[0][1],best[0][2]
+
 
 def summary(rows,batches,oversized,docs):
     from collections import Counter
     text=sum(len(b['text']) for d in docs for b in d['blocks'])
     repeated=sum(len(b['text']) for batch in batches for b in batch['payload']['documents'])
-    return dict(strategy='compare_complete_document_and_grouped_passes',
+    return dict(strategy='minimum_calls_contiguous_groups_v5',
         documents=[dict(id=d['id'],type=d.get('classification',{}).get('type','unknown'),blocks=len(d['blocks']),
                         text_chars=sum(len(b['text']) for b in d['blocks']),gaps=len(d.get('gaps',[]))) for d in docs],
         applicability=dict(Counter(r['applicability']['result'] for r in rows)),

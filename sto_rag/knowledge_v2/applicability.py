@@ -21,13 +21,26 @@ def validate_expression(expression,depth=0):
     else:raise ValueError('Unregistered predicate')
 
 
-def evaluate(expression,facts,verify_evidence=None):
+REVIEW_SCOPE_POLICY = 'selected-sto-default-inclusion-v1'
+
+
+def evaluate(expression,facts,verify_evidence=None,*,review_scope=False):
     """Facts must carry provenance. Absence of a fact cannot prove non-applicability."""
     validate_expression(expression)
     def visit(node):
         op,value=next(iter(node.items()))
+        # This is a review policy, not an extracted document fact. Only the
+        # global STO scope gates are relaxed; local conditions stay three-valued.
+        if review_scope and op=='not' and value.get('fact',{}).get('name')=='excluded_system_class':
+            excluded=evaluate(value,facts,verify_evidence)
+            if excluded['result']=='unknown':
+                return True,[dict(policy=REVIEW_SCOPE_POLICY,default_inclusion=True,
+                    reason='No evidenced exclusion; selected STO applies by default')],[]
         if op=='unknown':return None,[],[value]
         if op=='fact':
+            if review_scope and value['name']=='organization':
+                return True,[dict(policy=REVIEW_SCOPE_POLICY,default_inclusion=True,
+                    reason='Selected STO applies irrespective of organization')],[]
             fact=facts.get(value['name'])
             if (not isinstance(fact,dict) or 'value' not in fact or not isinstance(fact.get('evidence'),list)
                 or not fact['evidence'] or not all(isinstance(x,dict) and x.get('locator') and x.get('source') for x in fact['evidence'])):
@@ -85,7 +98,7 @@ def select_requirements(profiles,cards,profile_id):
     return list(result.values())
 
 
-def match_profiles(profiles,facts,verify_evidence=None):
+def match_profiles(profiles,facts,verify_evidence=None,*,review_scope=False):
     """Independent facets may all apply; inherited predicates must also hold."""
     index={p['id']:validate_profile(p) for p in profiles}
     def expression(pid,seen):
@@ -94,4 +107,4 @@ def match_profiles(profiles,facts,verify_evidence=None):
         p=index[pid];terms=[p['expression']]
         terms.extend(expression(parent,seen|{pid}) for parent in p.get('inherits',[]))
         return {'all_of':terms} if len(terms)>1 else terms[0]
-    return {pid:evaluate(expression(pid,set()),facts,verify_evidence) for pid in index}
+    return {pid:evaluate(expression(pid,set()),facts,verify_evidence,review_scope=review_scope) for pid in index}

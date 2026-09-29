@@ -108,9 +108,11 @@ class Bridge:
         if os.getenv('KNOWLEDGE_EXPERT_ONLY')=='1':capabilities=['expert.apply','area.import']
         elif os.getenv('KNOWLEDGE_REVIEW_ONLY')=='1':capabilities=['review.execute','trace.suggest','review.suggest']
         else:capabilities.extend(['area.import','source.identify'])
+        if os.getenv('KNOWLEDGE_SKIP_REVIEW')=='1' and os.getenv('KNOWLEDGE_REVIEW_ONLY')!='1':capabilities=[x for x in capabilities if x!='review.execute']
         capabilities.append('normative.search')
         from .model_profile import enabled as profile_control
-        features=['context-budget-v4','check-log-v1']
+        # A v5 worker must never resume a v4 model/transport snapshot.
+        features=['context-budget-v5','check-log-v1']
         if profile_control():features.append('visual-tail-v1')
         claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,'features':features})['command']
         if claim is None:return False

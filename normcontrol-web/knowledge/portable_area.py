@@ -89,7 +89,9 @@ def plan(area,document,identity):
             else:
                 key=p.get('local_profile') or p.get('profile_id')
                 if key not in {ids[x['id']] for x in document['profiles']}:raise ValueError('Импортируемое требование должно принадлежать профилю JSON.')
-                p['profile_ids']=[key]
+                memberships=p.get('profile_ids') or [key]
+                if not isinstance(memberships,list) or any(x not in {ids[y['id']] for y in document['profiles']} for x in memberships):raise ValueError('Неизвестный профиль импортируемого требования.')
+                p['profile_ids']=list(dict.fromkeys([key,*memberships]))
             p['profile_id']=key;p['effective_profile_id']=key
             bases={str(uuid.uuid5(identity,'source-evidence:'+c['id']))}
         elif not bases:raise ValueError('Нормативное основание не найдено в обработанном оригинале: '+c['payload']['description'][:150])
@@ -101,7 +103,8 @@ def plan(area,document,identity):
         d=remap(copy.deepcopy(p['definition']),ids)
         d['bindings']=[dict(source_id=ids[b['source_id']],profile_id=profile_key(b['source_id'],b['profile_id'])) for b in p['definition']['bindings']]
         if direct and not d['bindings']:
-            d['bindings']=[dict(source_id=ids[s['id']],profile_id=ids[p['id']]) for s in document['sources']]
+            direct_sources={c['source_id'] for c in records if c['id'] in direct}
+            d['bindings']=[dict(source_id=ids[s['id']],profile_id=ids[p['id']]) for s in document['sources'] if s['id'] in direct_sources]
         imported_profiles.append(dict(id=ids[p['id']],definition=d))
     return dict(ready=True,controls=remap(document.get('controls',[]),ids),profiles=imported_profiles,cards=imports,choices=remap(document['glossary']['choices'],ids),links=remap(document['interdocument_requirements'],ids),area=document['area'],source_metadata=[dict(id=ids[s['id']],fields=s.get('metadata',{}),revision=source_map[s['id']].identification_revision) for s in document['sources']],
         replace_cards=[dict(id=str(c.pk),revision=c.revision) for c in candidates],replace_profiles=[dict(id=str(p.pk),revision=p.revision) for p in profiles],
@@ -222,6 +225,8 @@ def accept(c,result):
     link_ids={}
     for n,link in enumerate(c.payload['links']):
         data={k:link[k] for k in ('source','target','basis','source_type','target_type','relation','description','condition','mandatory_target','confidence')}
+        for key in ('basis_card_ids','semantic_status','execution_hint','evidence_contract','normative_basis'):
+            if key in link:data[key]=copy.deepcopy(link[key])
         data.update(status='draft',reason='Импорт междокументного требования из JSON; необходима экспертная сверка. '+link.get('reason',''))
         saved=save(c.actor,area.pk,data,key=digest(['area-import-link',str(c.pk),n]));link_ids[link['id']]=str(saved.pk)
     from .models import ObjectControl

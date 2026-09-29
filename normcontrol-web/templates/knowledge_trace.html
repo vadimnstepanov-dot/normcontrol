@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% load static %}
 {% block title %}Нормативные связи{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=917">
+<link rel="stylesheet" href="{% static 'knowledge-workspace.css' %}?v=20260929-template-1">
 <div id="kn-trace-editor" data-api="/normcontol/api/v2/">
 <div class="page-heading"><div><span class="eyebrow">НОРМАТИВНАЯ БАЗА / ТРАССИРОВКА</span><h1>Связи требований</h1><p>Свяжите требования разных профилей. Матрица комплекта проверяет исполнение этих связей по документам.</p></div><a class="button secondary" href="{% url 'knowledge-expert' %}">Карточки требований →</a></div>
 <div class="panel form-panel"><label for="trace-set">Нормативный набор</label><select id="trace-set"></select><p class="kn-help">Изменения действуют в новых проверках после подготовки и публикации выпуска. Ранее начатые проверки сохраняют свои версии.</p><div id="trace-notice" role="status"></div></div>

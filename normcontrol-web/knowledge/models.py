@@ -105,10 +105,13 @@ class SourceUpload(models.Model):
 
     @property
     def display_name(self):
-        fields=self.identification.get('fields',{})
-        title=fields.get('short_title',{}).get('value','').strip()
-        date=fields.get('approval_date',{}).get('value','').strip()
-        return (title+(' · утв. '+date if date else '')) if title else self.filename
+        from .source_names import names
+        return names(self.identification,self.filename)[0]
+
+    @property
+    def full_display_name(self):
+        from .source_names import names
+        return names(self.identification,self.filename)[1]
 
     supersedes = models.ForeignKey('self', null=True, blank=True, on_delete=models.PROTECT)
     state = models.CharField(max_length=16, default='queued')

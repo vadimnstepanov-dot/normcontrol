@@ -1,6 +1,7 @@
 services:
   knowledge-worker:
     environment:
+      KNOWLEDGE_SKIP_REVIEW: "1"
       SSL_CERT_FILE: /etc/ssl/certs/normcontrol-gateway.crt
     volumes:
       - ${KNOWLEDGE_GATEWAY_CERT_PATH:?Set the trusted local LLM gateway certificate path}:/etc/ssl/certs/normcontrol-gateway.crt:ro

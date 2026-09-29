@@ -382,6 +382,19 @@ def toggle_view_others(request,pk):
 
 @administrator
 @require_POST
+def toggle_expert(request,pk):
+    user=get_object_or_404(User,pk=pk)
+    if user.is_staff:return HttpResponseForbidden('Администратор уже имеет права эксперта.')
+    with transaction.atomic():
+        profile,_=AccessProfile.objects.select_for_update().get_or_create(user=user)
+        profile.is_expert=not profile.is_expert
+        profile.save(update_fields=['is_expert'])
+        audit(request,('Назначена роль эксперта: ' if profile.is_expert else 'Снята роль эксперта: ')+user.username)
+    messages.success(request,'Роль эксперта назначена.' if profile.is_expert else 'Роль эксперта снята.')
+    return redirect('users')
+
+@administrator
+@require_POST
 def toggle_admin(request,pk):
     with transaction.atomic():
         user=get_object_or_404(User.objects.select_for_update(),pk=pk)

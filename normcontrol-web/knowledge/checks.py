@@ -48,7 +48,7 @@ def start(user,batch_id,set_ids,experience_set_id,key,*,workflow=None):
         if lessons.purpose!='experience' or lessons.state!='ready' or str(lessons.scope_id) not in scopes or not lessons.active_release or lessons.active_release.state!='active':
             raise NotReady('Selected experience set is not published in this scope')
         experience=lessons.active_release
-    job_id=uuid.uuid4();snap=create_snapshot(user,job_id,set_ids,{'engine':'review-v2.3','planner':'context-budget-v4','visual':'visual-tail-v1','trace':'package-trace-9.1.6','response_schema':'review-v2','selection':'explicit'})
+    job_id=uuid.uuid4();snap=create_snapshot(user,job_id,set_ids,{'engine':'review-v2.3','planner':'context-budget-v5','template':'sto-template-v1','visual':'visual-tail-v1','trace':'package-trace-9.1.6','response_schema':'review-v2','selection':'explicit'})
     job=KnowledgeCheck.objects.create(id=job_id,batch=batch,owner=user,snapshot=snap,experience_release=experience,
         progress={'completed':0,'total':None,'percent':0,'eta_seconds':None})
     docs=list(batch.documents.order_by('id').values('id','name','size','sha256'))
@@ -57,7 +57,7 @@ def start(user,batch_id,set_ids,experience_set_id,key,*,workflow=None):
         snapshot_id=str(snap.pk),snapshot=snap.data,snapshot_digest=snap.digest,
         set_ids=sorted(set_ids),experience_set_id=experience_set_id,
         experience_release_id=str(experience.pk) if experience else None,experience_scope_id=str(experience.normative_set.scope_id) if experience else sorted(scopes)[0],
-        documents=docs,trace_version='package-trace-9.1.6',planning_version='context-budget-v4',visual_version='visual-tail-v1',**(workflow or {}))
+        documents=docs,template_version='sto-template-v1',trace_version='package-trace-9.1.6',planning_version='context-budget-v5',visual_version='visual-tail-v1',**(workflow or {}))
     payload['logging']={'enabled':batch.logging_enabled,'version':'check-log-v1','directions':list((workflow or {}).get('directions',batch.checks))}
     c=command(user,selected[0],'review.execute',identity,payload)
     audit(user,'knowledge_check.queued',job.pk,{'sets':len(selected),'documents':len(docs)})
@@ -97,15 +97,23 @@ def progress(worker_id,command_id,lease,job_id,value):
     require(c.actor,c.normative_set.scope,'read')
     job=KnowledgeCheck.objects.select_for_update().get(pk=job_id)
     if (not isinstance(value,dict) or not {'completed','total','percent','eta_seconds','task_id','preview'}<=set(value)
-        or set(value)-{'completed','total','percent','eta_seconds','task_id','preview','stage','visual_total'}):
+        or set(value)-{'completed','total','percent','eta_seconds','task_id','preview','stage','visual_total','operation','template_comparison'}):
         raise ValueError('Progress schema')
-    if 'stage' in value and value['stage'] not in ('text','trace','vision'):raise ValueError('Progress stage')
+    if 'stage' in value and value['stage'] not in ('download','parse','classify','facts','template','select','plan','visual_plan','text','trace','vision'):raise ValueError('Progress stage')
+    if 'template_comparison' in value:
+        comparison=value['template_comparison']
+        if not isinstance(comparison,dict) or comparison.get('version')!='sto-template-v1' or not isinstance(comparison.get('documents'),list):raise ValueError('Template comparison schema')
     if 'visual_total' in value and (type(value['visual_total']) is not int or value['visual_total']<0):raise ValueError('Visual task count')
     if type(value['completed']) is not int or value['completed']<job.progress.get('completed',0):raise Conflict('Progress cannot rewind')
-    if type(value['total']) is not int or value['total']<value['completed']:raise ValueError('Progress total')
+    if value['total'] is None:
+        if value['completed']!=0 or job.progress.get('total') is not None:raise ValueError('Preparation progress cannot replace a plan')
+    elif type(value['total']) is not int or value['total']<value['completed']:raise ValueError('Progress total')
+    if 'operation' in value and (not isinstance(value['operation'],str) or len(value['operation'])>300):raise ValueError('Progress operation')
     if not isinstance(value['preview'],list) or len(value['preview'])>5 or any(not isinstance(x,dict) or x.get('state')!='candidate' for x in value['preview']):
         raise ValueError('Preview schema')
-    job.progress=value
+    if 'template_comparison' not in value and job.progress.get('template_comparison'):
+        value=dict(value,template_comparison=job.progress['template_comparison'])
+    job.progress=dict(value,updated_at=timezone.now().isoformat())
     if job.state=='queued':job.state='running'
     job.save(update_fields=['progress','state'])
     return {'accepted':True,'pause_requested':job.pause_requested}

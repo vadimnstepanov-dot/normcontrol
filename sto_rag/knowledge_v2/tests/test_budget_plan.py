@@ -47,6 +47,41 @@ class PlanningTests(unittest.TestCase):
         batches,failed=plan(rows,blocks,Budget(),scope)
         self.assertFalse(batches);self.assertEqual(failed,rows)
 
+    def test_fitting_whole_document_avoids_boundary_search_and_second_strategy(self):
+        rows,blocks,scope=self.inputs([100]*8);model=Budget();model.context=20000;model.output_tokens=1024
+        from unittest.mock import patch
+        with patch.object(model,'count',wraps=model.count) as calls:
+            batches,failed=plan(rows,blocks,model,scope)
+        self.assertFalse(failed);self.assertEqual(len(batches),1)
+        self.assertEqual(calls.call_count,1)
+        self.assert_coverage(rows,blocks,scope,model,batches,failed)
+
     def test_empty_source_does_not_create_false_complete_review(self):
         rows,_,scope=self.inputs([100]);batches,failed=plan(rows,[],Budget(),scope)
         self.assertFalse(batches);self.assertEqual(failed,rows)
+
+    def test_smaller_groups_win_even_when_no_whole_document_group_fits(self):
+        # The former two strategies both chose 8 norms: barely any evidence fit.
+        rows,blocks,scope=self.inputs([400]*8,size=30)
+        model=Budget();model.output_tokens=1024;model.context=7000
+        batches,failed=plan(rows,blocks,model,scope)
+        self.assertFalse(failed)
+        self.assertLess(len(batches),30)
+        self.assert_coverage(rows,blocks,scope,model,batches,failed)
+
+    def test_minimum_calls_matches_exhaustive_contiguous_group_oracle(self):
+        rows,blocks,scope=self.inputs([100,1300,400,900,300],size=10)
+        model=Budget();model.context=4500;model.output_tokens=1024
+        # Exhaustively enumerate every contiguous grouping independently for
+        # a one-block document, whose fit has a directly computable cost.
+        blocks=[dict(id='only',text='x'*1800,headings=['Whole'])]
+        scope['expected_ids']=['only'];reserve=2*model.output_tokens+512
+        model.context=6500;best=999
+        for cuts in range(1<<(len(rows)-1)):
+            groups=[];start=0
+            for i in range(len(rows)):
+                if i==len(rows)-1 or cuts&(1<<i):groups.append(rows[start:i+1]);start=i+1
+            if all(model.count(dict(obligations=g,documents=blocks))+reserve<=model.context for g in groups):best=min(best,len(groups))
+        batches,failed=plan(rows,blocks,model,scope)
+        self.assertFalse(failed);self.assertEqual(len(batches),best)
+        self.assert_coverage(rows,blocks,scope,model,batches,failed)

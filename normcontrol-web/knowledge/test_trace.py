@@ -29,6 +29,15 @@ class TracePortalTests(TestCase):
         self.assertEqual(len(self.client.get(path).json()['history']),2)
         self.assertContains(self.client.get('/normcontol/knowledge/trace/'),'Связи требований')
         self.client.force_login(self.other);self.assertEqual(self.client.get(url+'?set_id='+str(self.dataset.pk)).status_code,403)
+
+    def test_link_basis_extensions_survive_edit_and_revision(self):
+        self.prepare()
+        value=dict(self.value,basis_card_ids=[self.value['basis']],evidence_contract={'required':['source','target']},normative_basis=[{'card_id':self.value['basis']}])
+        row=trace_links.save(self.user,self.dataset.pk,value)
+        edited=trace_links.save(self.user,self.dataset.pk,dict(self.value,expected_revision=1),row.pk)
+        self.assertEqual(edited.payload['normative_basis'],value['normative_basis'])
+        self.assertEqual(edited.payload['evidence_contract'],value['evidence_contract'])
+        self.assertEqual(edited.history.last().payload['basis_card_ids'],value['basis_card_ids'])
     def test_release_pins_links_and_changes_require_new_release(self):
         self.prepare();row=trace_links.save(self.user,self.dataset.pk,self.value)
         r,policy=self.release();self.assertEqual(policy['links'][0]['id'],str(row.pk));self.assertFalse(policy['links'][0]['trusted'])

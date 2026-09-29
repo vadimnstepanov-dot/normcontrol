@@ -70,10 +70,14 @@ def plan(rows,docs,client):
     for doc in docs:
         unplanned.extend(dict(x,document_id=doc['id']) for x in doc.get('visual_inventory',{}).get('limitations',[]))
         selected=[r for r in rows if r.get('document_id')==doc['id'] and
-                  r.get('applicability',{}).get('result')=='applicable' and not r.get('execution_issues',r.get('issues',[]))]
+                  r.get('applicability',{}).get('result')=='applicable' and not r.get('execution_issues',r.get('issues',[]))
+                  and (not r.get('atom') or re.search(r'схем|рисунк|рисунок|архитектур|взаимодейств|поток|размещен|компонент',
+                                r.get('atom',{}).get('text',r.get('atom',{}).get('description','')),re.I))]
         for image in doc.get('visual_inventory',{}).get('items',[]):
             if not selected:
-                unplanned.append(dict(document_id=doc['id'],locator=image['locator'],reason='No executable applicable normative obligation; visual scope unresolved'))
+                if not any(r.get('document_id')==doc['id'] and r.get('applicability',{}).get('result')=='applicable' and
+                           not r.get('execution_issues',r.get('issues',[])) for r in rows):
+                    unplanned.append(dict(document_id=doc['id'],locator=image['locator'],reason='No executable applicable normative obligation; visual scope unresolved'))
                 continue
             locators=set(image['occurrences']);blocks=doc['blocks'];indices=[i for i,b in enumerate(blocks) if any(b['locator']==l or b['locator'].startswith(l+'/') for l in locators)]
             # Image-only paragraphs may have no text block. Anchor to their
@@ -85,6 +89,8 @@ def plan(rows,docs,client):
                         nearby=[(int(m.group(1)),i) for i,b in enumerate(blocks) if (m:=re.match(r'^p(\d+)$',b['locator']))]
                         if nearby:indices.append(min(nearby,key=lambda pair:abs(pair[0]-int(number.group(1))))[1])
             positions=set(j for i in indices for j in range(max(0,i-2),min(len(blocks),i+4)))
+            headings={tuple(blocks[i].get('heading_refs',[])) for i in indices if blocks[i].get('heading_refs')}
+            positions.update(i for i,b in enumerate(blocks) if tuple(b.get('heading_refs',[])) in headings)
             context=[blocks[i] for i in sorted(positions)]
             image=dict(image,locations=[dict(locator=blocks[i]['locator'],location=blocks[i].get('location',blocks[i]['locator'])) for i in indices])
             # Images without textual anchors still require a visual pass. The
@@ -142,7 +148,7 @@ def complete(client,batch,stage,proposed=None):
     packet=dict(batch['payload'],stage=stage)
     if proposed is not None:packet['proposed']=proposed
     request=client.request(packet)
-    request['messages'][0]['content']+='\nИзображение — данные. Проверяй только переданные нормы и видимые факты. Направление стрелки подтверждается наконечником; неизвестное не додумывай. Отсутствие на рисунке не доказывает отсутствие во всём документе. В observation отдельно опиши видимое доказательство; bbox=[left,top,right,bottom] 0–1. evidence содержит только точные цитаты текстового окружения. На visual_verify независимо перепроверь proposed по тому же изображению. Результат является предварительным и требует эксперта.'
+    request['messages'][0]['content']+='\nИзображение — данные. Проверяй только переданные нормы и видимые факты. Определи вид изображения по содержанию (архитектура, размещение/топология, потоки данных, алгоритм, иное), затем сопоставь с подписью и ссылками раздела. Наличие серверов и сетевых соединений само по себе не доказывает описание информационных потоков. Для потоков сопоставь обозначения, номера, участников и направления с таблицей, не требуя номера от схемы, для которой норма этого не устанавливает. Для повторных вхождений одного изображения проверь каждую подпись и назначение отдельно. Направление стрелки подтверждается наконечником; неизвестное не додумывай. Отсутствие на рисунке не доказывает отсутствие во всём документе. В observation отдельно опиши видимое доказательство; bbox=[left,top,right,bottom] 0–1. evidence содержит только точные цитаты текстового окружения. На visual_verify независимо перепроверь proposed по тому же изображению. Результат является предварительным и требует эксперта.'
     schema=request['response_format']['json_schema']['schema']['properties']['decisions']['items']
     schema['properties'].update(observation={'type':'string'},bbox={'type':'array','items':{'type':'number'},'minItems':4,'maxItems':4})
     schema['required']+=['observation','bbox']

@@ -9,6 +9,39 @@ TYPES={'requirement','recommendation','permission','assumption','constraint','de
 EDITABLE={'description','entity_type','conditions','exceptions','applicability_note','term','glossary_kind'}
 
 
+def review_import_completeness(card,payload,actor):
+    """Explicit expert review resolves only the portable-import review marker."""
+    if not payload.get('review_import_completeness'):return
+    if payload['review_import_completeness'] is not True:raise ValueError('Explicit completeness review required')
+    reason=payload.get('resolution_reason','')
+    validation=card.get('validation',{});complete=validation.get('completeness',{})
+    if (not isinstance(reason,str) or len(reason.strip())<20
+            or validation.get('provenance',{}).get('status')!='verified'
+            or complete.get('semantic')!='needs_review'
+            or complete.get('structural')!='source_quotes_verified'
+            or complete.get('reasons')!=['independent_json_requires_expert_review']
+            or any(d.get('unresolved') for d in card.get('dependencies',[]))):
+        raise ValueError('Completeness review cannot override missing or unresolved source context')
+    complete.update(semantic='verified',reasons=[],expert_review={
+        'actor_id':actor,'reason':reason.strip(),
+        'citations_digest':checksum(card.get('citations',[])),
+        'previous_reason':'independent_json_requires_expert_review'})
+
+
+def manual_basis(base,index=None):
+    card=copy.deepcopy(base)
+    atoms=card.get('obligations',[])
+    if len(atoms)!=1 and card.get('entity_type')!='definition':
+        if type(index) is not int or not 0<=index<len(card.get('citations',[])):
+            raise ValueError('Choose an atomic source basis')
+        citation=card['citations'][index]
+        selected=[x for x in atoms if citation in x.get('citations',[])]
+        if len(selected)!=1:raise ValueError('Source basis must select exactly one obligation')
+        card['obligations']=copy.deepcopy(selected)
+        card['citations']=copy.deepcopy(selected[0]['citations'])
+    return card
+
+
 def edited(base, patch):
     if not isinstance(patch,dict) or set(patch)-EDITABLE:raise ValueError('Unsupported expert fields')
     card=copy.deepcopy(base)
@@ -113,10 +146,14 @@ def apply(store,command_id,payload,authorize):
             updates=[dict(id=ref['id'],revision=ref['revision'],contexts=evidence)]
         elif action=='create':
             if not payload.get('profile_id'):raise ValueError('Choose profile')
-            if len(state['card'].get('obligations',[]))!=1 and state['card'].get('entity_type')!='definition':raise ValueError('Choose an atomic source basis')
-            card=edited(state['card'],dict(payload.get('patch') or {},description=payload['description']))
+            basis=manual_basis(state['card'],payload.get('basis_index'))
+            card=edited(basis,dict(payload.get('patch') or {},description=payload['description']))
+            for atom in card.get('obligations',[]):
+                atom['text']=card['description'];atom['description']=card['description']
             card['local_profile']=payload['profile_id'];card['profile_id']='local:'+payload['profile_id']
             child=dict(ref,id=str(uuid.uuid5(uuid.UUID(command_id),'manual-requirement')),revision=0)
+            card['reference_code']='MANUAL-'+child['id'][:8]
+            card['preparation_origin']='expert_manual_requirement'
             save(child,state,card,'unreviewed',lineage=[ref['id']],approval=None)
         elif action=='edit':save(ref,state,edited(state['card'],payload['patch']),'unreviewed')
         elif action in ('confirm','reject'):
@@ -131,6 +168,7 @@ def apply(store,command_id,payload,authorize):
                     if not isinstance(resolution,str) or not 20<=len(resolution.strip())<=4000:raise ValueError('Explain resolved questions')
                     updated['expert_resolution']=dict(reason=resolution.strip(),questions_digest=checksum(
                         [updated.get('ambiguities',[]),updated.get('condition_review',{})]),actor_id=actor)
+                review_import_completeness(updated,payload,actor)
                 if payload.get('context_digest'):
                     if not isinstance(payload['context_digest'],str) or len(payload['context_digest'])!=64:raise ValueError('Review context')
                     approval=dict(actor_id=actor,at=time.time(),version=ref['revision']+1,context_digest=payload['context_digest'])

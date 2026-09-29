@@ -33,7 +33,8 @@ class Journal:
         event=dict(id=str(uuid.uuid4()),job_id=self.job,kind=kind,at=time.time(),value=clean(value))
         # Append a complete line. Export never reads a partial last line.
         with self.lock,self.path.open('a',encoding='utf8') as f: f.write(encode(event)+'\n')
-    def deliver(self, bridge, claim):
+    def deliver(self, bridge, claim, max_chunks=None):
+        sent=0
         sequence=0;offset=0
         marker=self.path.with_suffix('.delivered')
         cursor=self.path.with_suffix('.cursor')
@@ -55,10 +56,15 @@ class Journal:
                 try:event=json.loads(line)
                 except ValueError:break
                 # Each object is split losslessly for bounded transport and XLSX cells.
-                encoded=encode(event);parts=[encoded[n:n+24000] for n in range(0,len(encoded),24000)]
-                pieces=[dict(event_id=event['id'],kind=event['kind'],part=n,total=len(parts),text=part,sha256=checksum(event)) for n,part in enumerate(parts)]
-                for n in range(0,len(pieces),20):
-                    send(pieces[n:n+20])
+                encoded=encode(event);total=(len(encoded)+23999)//24000
+                event_hash=checksum(event)
+                for start in range(0,total,20):
+                    if max_chunks is not None and sent>=max_chunks and sequence>acknowledged:return
+                    if getattr(bridge,'stop_event',None) is not None and bridge.stop_event.is_set():return
+                    pieces=[dict(event_id=event['id'],kind=event['kind'],part=n,total=total,
+                        text=encoded[n*24000:(n+1)*24000],sha256=event_hash) for n in range(start,min(total,start+20))]
+                    send(pieces)
+                    if sequence>acknowledged:sent+=1
                     sequence+=1
                 temporary=cursor.with_suffix('.cursor.tmp')
                 temporary.write_text(json.dumps(dict(sequence=sequence,offset=f.tell())),encoding='ascii')
@@ -109,3 +115,46 @@ def logged(fn):
                 journal.delivery_error.write_text(type(exc).__name__,encoding='utf8')
             finally:active.reset(token)
     return wrapper
+
+
+def compact_plan(plan):
+    """Exact references remove repeated rows, blocks, scopes and row contexts."""
+    from .review_wire import Pool
+    fields={k:v for k,v in plan.items() if k not in ('batches','rows')}
+    fields['journal_representation']='plan-references-v2'
+    shared=Pool('R');scope_bases=Pool('S');fields['rows']=[];fields['batches']=[]
+    for row in plan['rows']:
+        packed=dict(row);refs={}
+        for key in ('context','applicability','publication_trust','composition_group','profile_versions'):
+            if key in packed and len(encode(packed[key]))>1200:refs[key]=shared.add(packed.pop(key))
+        if refs:packed['journal_value_refs']=refs
+        fields['rows'].append(packed)
+    for batch in plan['batches']:
+        packet=batch['payload'];body={k:v for k,v in packet.items() if k not in ('documents','obligations')}
+        scope=packet.get('completeness')
+        if isinstance(scope,dict):
+            local={k:v for k,v in scope.items() if k in ('part','parts','full_text','submitted_ids')}
+            base={k:v for k,v in scope.items() if k not in local}
+            body['completeness']=dict(local,journal_base_ref=scope_bases.add(base))
+        fields['batches'].append(dict(id=batch['id'],payload=body,
+            document_refs=[b['id'] for b in packet['documents']],obligation_refs=[r['id'] for r in packet['obligations']]))
+    fields['journal_row_values']=shared.items;fields['journal_scope_bases']=scope_bases.items
+    return fields
+
+
+def expand_plan(compact):
+    """Verify the normalized journal can reconstruct its canonical plan exactly."""
+    fields={k:v for k,v in compact.items() if k not in ('journal_representation','journal_row_values','journal_scope_bases','rows','batches')}
+    fields['rows']=[]
+    for row in compact['rows']:
+        value={k:v for k,v in row.items() if k!='journal_value_refs'}
+        value.update({k:compact['journal_row_values'][ref] for k,ref in row.get('journal_value_refs',{}).items()});fields['rows'].append(value)
+    rows={r['id']:r for r in fields['rows']};blocks={b['id']:b for d in fields['documents'] for b in d['blocks']}
+    fields['batches']=[]
+    for batch in compact['batches']:
+        packet=dict(batch['payload']);scope=packet.get('completeness')
+        if isinstance(scope,dict) and 'journal_base_ref' in scope:
+            packet['completeness']=dict(compact['journal_scope_bases'][scope['journal_base_ref']],**{k:v for k,v in scope.items() if k!='journal_base_ref'})
+        packet.update(documents=[blocks[k] for k in batch['document_refs']],obligations=[rows[k] for k in batch['obligation_refs']])
+        fields['batches'].append(dict(id=batch['id'],payload=packet))
+    return fields

@@ -15,3 +15,6 @@ def publish(directory,timings,stage):
             fields[name]=number(count)*1000/number(milliseconds)
     if fields['generation_tps'] is None and fields['prefill_tps'] is None:return
     atomic_json(directory/'llm-telemetry.json',dict(source='knowledge-v2',ended=time.time(),stage=stage,**fields))
+    # Counters contain no document text, credentials or paths. Windows reads
+    # this file over WSL UNC; don't inherit NamedTemporaryFile's private mode.
+    (directory/'llm-telemetry.json').chmod(0o644)

@@ -18,6 +18,7 @@ routes.extend([path('worker/llm/telemetry/',w.llm_telemetry),path('worker/llm/co
 routes.append(path('batches/<uuid:pk>/delete/',v.delete_batch,name='batch-delete'))
 routes.append(path('settings/users/<int:pk>/view-others/',v.toggle_view_others,name='user-view-others'))
 routes.append(path('settings/users/<int:pk>/admin/',v.toggle_admin,name='user-admin'))
+routes.append(path('settings/users/<int:pk>/expert/',v.toggle_expert,name='user-expert'))
 
 def legacy(request,rest=''):
     location='/normcontol/'+rest

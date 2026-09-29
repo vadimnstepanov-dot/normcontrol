@@ -30,6 +30,8 @@ class Engine:
         self.config=cfg or config();self.store=store or Store();self.client=Client(self.config);self.lock=threading.Lock();self.cache=LRU(self.config['ram_bytes']);self.thread=None
     def create(self,paths,options=None,owner='local'):
         if not 1<=len(paths)<=20:raise ValueError('Нужен комплект из 1–20 документов')
+        if load_catalog()['version']=='non-normative-empty-v1' and {**self.config,**(options or {})}.get('check_sto',True):
+            raise ValueError('Нет старого каталога СТО: используйте нормативную проверку knowledge-v2 либо отключите СТО для ненормативного прогона')
         cat=load_catalog();data={'paths':[str(Path(p).resolve()) for p in paths],'options':{**self.config,**(options or {})},'owner':owner,'version':VERSION,'implementation':implementation_hash(),'catalog':cat['version'],'derived':[], 'limitations':[]}
         jid=self.store.create(data)
         return jid

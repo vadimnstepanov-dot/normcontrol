@@ -86,3 +86,28 @@
 .brand>a{color:inherit;text-decoration:none}.brand-mark{cursor:pointer;font:inherit;color:inherit;padding:0;border:1px solid var(--border)}html[data-sidebar="collapsed"] .brand>a{display:none}.na-object-actions{display:inline-flex;gap:6px;align-items:center;flex-wrap:nowrap}.na-icon-action{width:36px;height:36px;min-width:36px;padding:8px;display:inline-flex;align-items:center;justify-content:center}.na-icon-action svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.na-icon-action.danger{color:var(--red)}.na-icon-action:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.na-object-inactive{opacity:.65}
 
 .nav-audit-icon{width:20px;height:20px;vertical-align:middle;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+/* A moving highlight indicates activity; the underlying arc retains actual progress. */
+.current-review-button.is-active .current-review-ring{animation:none}
+.current-review-ring.is-running::after,.current-review-button.is-active .current-review-ring::after{content:'';position:absolute;inset:0;border:0;border-radius:50%;pointer-events:none;background:conic-gradient(from 0deg,transparent 0deg,transparent 270deg,rgba(111,232,255,.15) 290deg,#6fe8ff 320deg,#b0a0ff 340deg,transparent 360deg);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px));mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px));animation:review-highlight-orbit 2.8s linear infinite;filter:drop-shadow(0 0 3px rgba(111,232,255,.75))}
+.current-review-ring span{z-index:1}
+@keyframes review-highlight-orbit{to{transform:rotate(360deg)}}
+
+/* User permissions: stable label and switch columns across every account. */
+.users-panel{container-type:inline-size}
+.users-panel .member-row{display:grid;grid-template-columns:36px minmax(0,1fr) 224px;gap:16px;align-items:start;padding:22px}
+.users-panel .member-row>.avatar{margin-top:4px}
+.users-panel .member-info{padding-top:3px}
+.users-panel .member-row .member-actions{margin:0;min-width:0;width:224px;align-items:stretch;gap:12px;text-align:left}
+.users-panel .member-permissions{width:100%;gap:2px;justify-items:stretch}
+.users-panel .member-permissions form{width:100%}
+.users-panel .permission-toggle{display:flex;justify-content:space-between;width:100%;min-height:34px;padding:6px 0;gap:14px;text-align:left}
+.users-panel .permission-toggle>.toggle-track{order:2;flex:0 0 31px;margin:0}
+.users-panel .permission-toggle>span:last-child{order:1;white-space:normal;line-height:1.4}
+.users-panel .permission-toggle:disabled{cursor:default}
+.users-panel .member-links{justify-content:space-between;gap:8px;padding-top:10px;border-top:1px solid var(--line);font-size:.75rem}
+@container (max-width:460px){
+  .users-panel .member-row{grid-template-columns:36px minmax(0,1fr);gap:12px;padding:18px}
+  .users-panel .member-row .member-actions{grid-column:1/-1;width:100%;padding-top:10px;border-top:1px solid var(--line)}
+  .users-panel .permission-toggle{min-height:38px}
+}

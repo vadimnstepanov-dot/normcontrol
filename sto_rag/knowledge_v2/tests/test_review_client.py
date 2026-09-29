@@ -38,7 +38,7 @@ class WireTests(unittest.TestCase):
         self.assertEqual(wire['obligations'][0]['atom'],row['atom'])
         self.assertEqual([wire['normative_contexts'][ref] for ref in wire['obligations'][0]['context_refs']],row['context'])
         self.assertEqual(wire['obligations'][0]['dependencies'],row['dependencies'])
-        self.assertEqual(wire['obligations'][0]['applicability'],row['applicability'])
+        self.assertEqual(wire['applicability_contexts'][wire['obligations'][0]['applicability_ref']],row['applicability'])
         self.assertNotIn('profile_versions',wire['obligations'][0])
         self.assertEqual(wire['completeness']['expected_block_count'],1000)
         self.assertEqual(wire['completeness']['submitted_block_count'],2)
@@ -73,3 +73,33 @@ class WireTests(unittest.TestCase):
         verify=dict(check,stage='verify',proposed=[dict(obligation_id='r',evidence=[{'block_id':'b','quote':'Полная цитата'}])])
         a,_=wire_payload(check);b,_=wire_payload(verify)
         self.assertEqual(serialize(a).split(',"stage":')[0],serialize(b).split(',"stage":')[0])
+
+    def test_table_row_and_headers_are_exact_without_repeating_heading_structure(self):
+        blocks=[dict(id='b'+str(i),document='doc',text=str(i),locator='t1/r'+str(i)+'/c2',
+                     headings=['Раздел данных'],heading_refs=['p10'],table=1,row=i,header_path=['Параметр','Предел']) for i in range(1,101)]
+        wire,_=wire_payload(dict(obligations=[{'id':'rule'}],documents=blocks))
+        self.assertEqual(len(wire['document_structures']),1)
+        self.assertEqual(len(wire['document_headers']),1)
+        for original,packed in zip(blocks,unpack(wire)):
+            self.assertEqual(packed['text'],original['text'])
+            self.assertEqual(packed['row'],original['row'])
+            self.assertEqual(packed['locator'],original['locator'])
+            self.assertEqual(wire['document_headers'][packed['header_ref']],original['header_path'])
+            structure=wire['document_structures'][packed['structure_ref']]
+            for key in ('headings','heading_refs','table'):self.assertEqual(structure[key],original[key])
+
+    def test_normative_quotes_conditions_and_source_revisions_survive(self):
+        citation=dict(quote='Если согласовано: не более 12 ч.',locator='p5',context_hash='hash',source_sha256='sha',start=4,end=20)
+        atom=dict(description='Ограничение',conditions=['После согласования'],exceptions=['Кроме испытаний'],citations=[citation])
+        fragment=dict(exact_text=citation['quote'],search_text='поисковая копия',ref=['fragment',2],source_revision=['standard',3])
+        original=dict(obligations=[dict(id='r',atom=atom,context=[fragment],dependencies=[{'condition':'только по решению комиссии'}])])
+        before=copy.deepcopy(original);wire,_=wire_payload(original);row=wire['obligations'][0]
+        self.assertEqual(original,before)
+        for key in ('description','conditions','exceptions'):self.assertEqual(row['atom'][key],atom[key])
+        self.assertEqual(row['dependencies'],original['obligations'][0]['dependencies'])
+        compact=row['atom']['citations'][0]
+        self.assertEqual(compact['quote'],citation['quote']);self.assertEqual(compact['locator'],citation['locator'])
+        self.assertEqual(wire['sources'][compact['source_ref']],'sha')
+        f=wire['normative_contexts'][row['context_refs'][0]]
+        self.assertEqual(f['exact_text'],fragment['exact_text'])
+        self.assertEqual(wire['sources'][f['source_revision_alias']],['standard',3])

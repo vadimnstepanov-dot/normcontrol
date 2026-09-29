@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import source_open
 from . import expert_views as e
 from . import trace_views as t
 from . import area as a
@@ -66,6 +67,8 @@ urlpatterns=[
     path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/',views.source_detail),
     path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/coverage/',views.source_coverage),
     path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/download/',views.source_download),
+    path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/open/',source_open.open_document),
+    path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/word/',source_open.word_original,name='knowledge-source-word'),
     path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/retry/',views.source_retry),
     path('normative-sets/<uuid:set_id>/sources/<uuid:source_id>/analysis/',views.source_analysis),
     path('normative-sets/<uuid:set_id>/publish/',views.publish),

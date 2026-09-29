@@ -16,6 +16,15 @@ from .check_log import logged,emit
 def execute(bridge,claim,download,client=None,experience_index=None):
     payload=claim['payload'];store=bridge.store
     if checksum(payload['snapshot'])!=payload['snapshot_digest']:raise Conflict('Portal snapshot digest')
+    def preparing(stage,operation,**details):
+        with store.connection() as db:
+            if db.execute("SELECT 1 FROM tasks WHERE operation='review.run' AND json_extract(payload,'$.job_id')=?",(payload['job_id'],)).fetchone():return False
+        response=bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],
+            job_id=payload['job_id'],progress=dict(task_id=None,completed=0,total=None,percent=0,eta_seconds=None,
+                preview=[],stage=stage,operation=operation,**details)))
+        emit('preparation',dict(stage=stage,operation=operation))
+        # Resume must preserve the durable plan; preparation updates apply only before its creation.
+        return response.get('pause_requested') is True
     selected=payload['snapshot']['releases']
     if sorted(payload['set_ids'])!=sorted(x['set_id'] for x in selected):raise Conflict('Set selection changed')
     authorize=bridge.authorization_for(payload['actor_id'])
@@ -28,6 +37,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         if manifest['set_id']!=payload['experience_set_id']:raise Conflict('Experience release changed')
     model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=24576,output_tokens=2048,timeout=300,store=store)
     with tempfile.TemporaryDirectory(prefix='knowledge-check-') as temporary:
+        preparing('download','Получение документов и проверка контрольных сумм')
         paths=[]
         for index,declared in enumerate(payload['documents']):
             name=Path(declared['name']).name
@@ -44,6 +54,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                     digest.update(data);target.write(data)
             if size!=declared['size'] or digest.hexdigest()!=declared['sha256']:raise Conflict('Document revision changed')
             paths.append(path)
+        preparing('parse','Чтение структуры, текста и таблиц')
         docs=corpus(paths)
         visual_enabled=payload.get('visual_version')=='visual-tail-v1'
         if visual_enabled:
@@ -57,12 +68,18 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             types=set();stages=set()
             for item in selected:
                 _,records=release_records(store,item['release_id'],authorize);types.update(declared_types(records));stages.update(declared_stages(records))
+            preparing('classify','Определение вида документа и стадии')
             classify(store,docs,sorted(types),model,stages)
+        preparing('facts','Извлечение фактов для определения применимости нормативов')
         facts={};profiles={}
+        from .document_facts import requested,extract,verified,definitions
+        fact_names={};fact_basis=[]
         for doc in docs:
             by_release={};source_ids=[]
             for item in selected:
                 _,records=release_records(store,item['release_id'],authorize)
+                for name,values in requested(records).items():fact_names.setdefault(name,set()).update(values)
+                fact_basis.extend(definitions(records,requested(records)))
                 profile_ids=[rid for (rid,version),r in records.items() if r['kind']=='profile']
                 policy=next((r['payload'] for r in records.values() if r['kind']=='publication_policy'),None)
                 if policy and policy['profiles']:profile_ids=list(policy['profiles'].values())
@@ -87,15 +104,32 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                     b=next(x for x in doc['blocks'] if x['id']==e['block_id'])
                     ev.append(dict(source=doc['id'],locator=b['locator'],quote=e['quote']))
                 facts[doc['id']]['stage']=dict(value=doc['classification']['stage'],evidence=ev)
+            facts[doc['id']].update(extract(store,doc,{k:sorted(v) for k,v in fact_names.items()},model,fact_basis))
         def verify_fact(name,value,evidence):
             doc=next((d for d in docs if d['id']==evidence.get('source')),None)
             if not doc:return False
+            if verified(facts[doc['id']],name,value,evidence):return any(
+                b['locator']==evidence['locator'] and evidence['quote'] in b['text'] for b in doc['blocks'])
             if name=='selected_sources':return value==evidence.get('selected_sources')
             if name=='stage':return doc['classification'].get('stage')==value and any(
                 b['locator']==evidence.get('locator') and evidence.get('quote') in b['text'] for b in doc['blocks'][:35])
             return name=='document_type' and doc['classification'].get('types',doc['classification']['type'])==value and any(
                 b['locator']==evidence.get('locator') and b['text']==evidence.get('quote')
                 for b in doc['blocks'][:35])
+        template_comparison=None
+        if payload.get('template_version')=='sto-template-v1':
+            # Existing jobs retain their pinned plan. New jobs compare templates
+            # before any normative task, without an extra inference pass.
+            with store.connection() as db:
+                old_template=db.execute("SELECT payload FROM tasks WHERE operation='review.run' AND json_extract(payload,'$.job_id')=?",(payload['job_id'],)).fetchone()
+            if old_template:
+                template_comparison=json.loads(old_template[0]).get('template_comparison')
+            else:
+                from .template_check import build,TITLE
+                preparing('template',TITLE)
+                template_comparison=build(store,docs,[release_records(store,x['release_id'],authorize)[1] for x in selected],facts)
+                preparing('template','Структура сопоставлена; содержание будет дополнено результатами нормативной проверки',template_comparison=template_comparison)
+                emit('template_comparison',template_comparison)
         selector=None
         if payload.get('experience_release_id'):
             from .embedding import RemoteEncoder
@@ -125,8 +159,6 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             journal=active.get()
             if journal:
                 emit('checkpoint',dict(task_id=task_id,completed=completed,total=total,decisions=decisions))
-                try:journal.deliver(bridge,claim)
-                except Exception:journal.append('log_delivery_error',dict(message='Будет повторено из сохранённого журнала'))
             completed=max(progress_floor,completed)
             preview=[dict(state='candidate',reason=str(d.get('reason',''))[:500],obligation_id=d.get('obligation_id'),
                           evidence=[{'quote':str(e.get('quote',''))[:500],'location':e.get('location','')}
@@ -137,17 +169,23 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                     percent=round(completed/max(1,total+trace_total+visual_total)*100,1),
                     eta_seconds=(round((time.monotonic()-started)/(completed-previous_completed)*max(0,total+trace_total+visual_total-completed)) if completed>previous_completed else previous_eta),
                     preview=preview,**({'stage':phase,'visual_total':visual_total} if visual_enabled else {}))))
-            return response.get('pause_requested') is True or bridge.stop_event.is_set()
+            paused=response.get('pause_requested') is True or bridge.stop_event.is_set()
+            if journal and not paused:
+                try:journal.deliver(bridge,claim,max_chunks=1)
+                except Exception:journal.append('log_delivery_error',dict(message='Будет повторено из сохранённого журнала'))
+            return paused
         runner=ReviewRunner(store,model,authorize,owner=payload['actor_id'],experience_selector=selector,on_checkpoint=progress)
         from .model_queue import model_turn
         with model_turn(store,model):
             from .model_profile import ensure
             ensure(model,'text')
+            preparing('plan','Подбор требований и точный расчёт пакетов по контекстному окну')
             task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
-                experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [])
+                experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [],template_comparison=template_comparison)
             with store.connection() as db:
                 planned=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
-            emit('plan',planned)
+            from .check_log import compact_plan
+            emit('plan',compact_plan(planned))
             if visual_enabled:
                 from .visual_tail import plan
                 with store.connection() as db:review_payload=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
@@ -202,6 +240,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             elif visual_result.get('failures') or visual_unplanned:state='partial'
         if visual_enabled and visual_unplanned and state!='paused':state='partial'
         findings=[] if state=='paused' else [d for d in report['decisions'] if d['state'] in ('violated','unknown')]
+        if state!='paused':findings.extend(report.get('scope_findings',[]))
         if visual_result and state!='paused':
             from .visual_tail import findings as visual_findings
             visual_rows=visual_findings(visual_batches,visual_result);findings.extend(visual_rows)
@@ -234,6 +273,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             limitations=report['limitations']+(trace_report or {}).get('limitations',[])+
                 ([str(x['reason']) for x in visual_unplanned]+['Visual findings are preliminary source-linked observations, not expert-approved violations.'] if visual_enabled and (visual_batches or visual_unplanned) else []),
             normative_selection=report.get('normative_selection',[]),
+            template_comparison=report.get('template_comparison'),
             traceability={k:v for k,v in (trace_report or {}).items() if k!='rows'},
             snapshot=report['snapshot'],experience_used=report['experience_used'],
             planning=dict(report.get('planning',{}),**({'visual_tasks':visual_total,'order':['text','trace','vision'],

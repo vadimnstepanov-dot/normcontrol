@@ -156,6 +156,15 @@ def _xlsx_sheet(rows, widths, with_filter=False):
             f'<cols>{columns}</cols><sheetData>{"".join(body)}</sheetData>{filter_xml}</worksheet>')
 
 
+def template_rows(run):
+    rows=[]
+    for doc in ((run.report or {}).get('template_comparison') or {}).get('documents',[]):
+        for row in doc.get('rows',[]):
+            rows.append([doc.get('document_name','')+' — '+row.get('template_element',''),row.get('document_element',''),
+                row.get('result','')+('\nСодержание: '+row['content_result'] if row.get('content_result') else '')])
+    return rows
+
+
 def make_xlsx(batch, run, findings, errors, limitations, filters):
     documents = {str(d.get('id')): d.get('name', '') for d in (run.report or {}).get('documents', []) if isinstance(d, dict)}
     sheets = [
@@ -163,13 +172,15 @@ def make_xlsx(batch, run, findings, errors, limitations, filters):
         ('Замечания', [['№', 'ID', 'Статус', 'Тип', 'Категория', 'Важность', 'Документ', 'Место', 'Замечание', 'Обоснование', 'Цитата', 'Предложение', 'Основание СТО', 'Цитата СТО', 'Решение', 'Комментарий']] + _finding_rows(findings, documents), [7, 24, 20, 24, 26, 16, 35, 35, 56, 65, 65, 65, 44, 65, 24, 50], True),
         ('Ошибки задач', [['ID', 'Этап', 'Состояние', 'Попыток', 'Причина']] + [[e['id'], STAGE_LABELS.get(e['stage'], e['stage']), e['state'], e['attempts'], e['error']] for e in errors], [28, 28, 18, 12, 100], False),
     ]
+    comparison=template_rows(run)
+    if comparison:sheets.insert(1,('Шаблон СТО',[['Элемент шаблона','Элемент документа','Результат проверки структуры']]+comparison,[48,48,85],False))
     output = BytesIO()
     with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
-        overrides = ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1, 4))
+        overrides = ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1, len(sheets)+1))
         archive.writestr('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + overrides + '</Types>')
         archive.writestr('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
         archive.writestr('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + ''.join(f'<sheet name="{_xml(name)}" sheetId="{i}" r:id="rId{i}"/>' for i, (name, _, _, _) in enumerate(sheets, 1)) + '</sheets></workbook>')
-        archive.writestr('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + ''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1, 4)) + '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
+        archive.writestr('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + ''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1, len(sheets)+1)) + f'<Relationship Id="rId{len(sheets)+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
         archive.writestr('xl/styles.xml', '<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF18354B"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
         for i, (_, rows, widths, filtered) in enumerate(sheets, 1):
             archive.writestr(f'xl/worksheets/sheet{i}.xml', _xlsx_sheet(rows, widths, filtered))
@@ -186,6 +197,18 @@ def make_docx(batch, run, findings, errors, limitations, filters):
     documents = {str(d.get('id')): d.get('name', '') for d in (run.report or {}).get('documents', []) if isinstance(d, dict)}
     parts = [_paragraph('Отчёт нормоконтроля — реестр замечаний и ошибок', True)]
     parts.extend(_paragraph(f'{label}: {value}') for label, value in _summary_rows(batch, run, findings, errors, limitations, filters))
+    comparison=template_rows(run)
+    if comparison:
+        parts.append(_paragraph('1. Сопоставление структуры и содержания с шаблоном СТО',True))
+        table_rows=[['Элемент шаблона','Элемент документа','Результат проверки структуры']]+comparison
+        widths=[2800,2800,4000]
+        table='<w:tbl><w:tblPr><w:tblW w:w="9600" w:type="dxa"/><w:tblBorders>'+''.join(f'<w:{side} w:val="single" w:sz="4" w:color="D9D9D9"/>' for side in ['top','left','bottom','right','insideH','insideV'])+'</w:tblBorders></w:tblPr><w:tblGrid>'+''.join(f'<w:gridCol w:w="{width}"/>' for width in widths)+'</w:tblGrid>'
+        for index,row in enumerate(table_rows):
+            table+='<w:tr><w:trPr>'+('<w:tblHeader/>' if index==0 else '')+'</w:trPr>'
+            for width,value in zip(widths,row):
+                table+=f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/>'+('<w:shd w:fill="E8EDF2"/>' if index==0 else '')+'</w:tcPr>'+_paragraph(value)+'</w:tc>'
+            table+='</w:tr>'
+        parts.append(table+'</w:tbl>')
     parts.append(_paragraph('Реестр замечаний', True))
     if not findings:
         parts.append(_paragraph('Записей по выбранным фильтрам нет.'))

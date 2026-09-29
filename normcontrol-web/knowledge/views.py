@@ -11,7 +11,7 @@ from django.utils import timezone
 from pathlib import Path
 from django.views.decorators.csrf import csrf_exempt
 from . import services as s
-from .access import allowed, require
+from .access import allowed, require, is_expert
 from .models import Scope, NormativeSet, Release, SourceUpload, Command, CoverageChunk, ExperienceReview, KnowledgeCheck
 from . import uploads
 from .models import DocumentProfile
@@ -160,7 +160,7 @@ def source_json(source):
     from .object_control import metadata
     analysis=Command.objects.filter(normative_set_id=source.normative_set_id,kind='source.analyze',payload__source_id=str(source.pk)).order_by('-created').first()
     from .source_identity import history
-    return dict(control=metadata('source',source.pk),id=str(source.pk),set_id=str(source.normative_set_id),name=source.display_name,filename=source.filename,identification=source.identification,identification_revision=source.identification_revision,identity_history=history(source),
+    return dict(control=metadata('source',source.pk),id=str(source.pk),set_id=str(source.normative_set_id),name=source.display_name,full_name=source.full_display_name,filename=source.filename,identification=source.identification,identification_revision=source.identification_revision,identity_history=history(source),
         sha256=source.sha256,size=source.size,state=source.state,
         supersedes=str(source.supersedes_id) if source.supersedes_id else None,result=source.result,
         analysis={'state':analysis.state,'summary':analysis.result.get('summary',{})} if analysis else None)
@@ -251,7 +251,7 @@ def profiles(request):
         return JsonResponse({'id':str(row.pk),'revision':row.revision},status=201)
     return JsonResponse({'profiles':[dict(id=str(p.pk),scope_id=str(p.scope_id),name=p.name,revision=p.revision,definition=p.definition)
         for p in DocumentProfile.objects.select_related('scope').order_by('name') if allowed(request.user,p.scope,'read')],
-        'can_edit':request.user.is_staff})
+        'can_edit':request.user.is_staff or is_expert(request.user)})
 
 
 @boundary({'GET','PUT'})
@@ -383,7 +383,7 @@ def worker_claim(request):
     if d['protocol_version']!=2 or not isinstance(d['capabilities'],list) or not all(isinstance(x,str) for x in d['capabilities']):raise ValueError('Protocol')
     if not set(d['capabilities'])<=s.PERMISSION.keys():raise ValueError('Capabilities')
     features=d.get('features',[])
-    if not isinstance(features,list) or any(x not in ('context-budget-v3','context-budget-v4','check-log-v1','visual-tail-v1') for x in features):raise ValueError('Worker features')
+    if not isinstance(features,list) or any(x not in ('context-budget-v3','context-budget-v4','context-budget-v5','check-log-v1','visual-tail-v1') for x in features):raise ValueError('Worker features')
     c=s.claim(settings.KNOWLEDGE_WORKER_ID,d['capabilities'],features)
     return JsonResponse({'command':c})
 

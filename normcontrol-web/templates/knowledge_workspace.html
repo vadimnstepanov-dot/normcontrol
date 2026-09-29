@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% load static %}
 {% block title %}Нормативная база{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{% static 'normative-area.css' %}?v=20260928-controls-2">
+<link rel="stylesheet" href="{% static 'normative-area.css' %}?v=20260928-source-word-1">
 <div id="normative-area" data-user="{{ request.user.pk }}" data-api="/normcontol/api/v2/">
 <div class="page-heading"><div><span class="eyebrow">КОМАНДНАЯ РАБОТА / НОРМАТИВЫ</span><h1>Нормативная база</h1><p>Загрузите нормативы в область — система сформирует и опубликует профили, требования и глоссарий.</p></div><button type="button" class="button primary" id="na-create">＋ Создать область</button></div>
 <div id="na-notice" role="status" class="notice" hidden></div>
@@ -9,5 +9,5 @@
 <dialog id="na-dialog"><form id="na-form"><div class="na-head"><h2 id="na-dialog-title"></h2><button type="button" id="na-close" class="button subtle" aria-label="Закрыть">×</button></div><div id="na-fields"></div><p id="na-form-error" class="error-text" role="alert"></p><div class="na-actions"><button type="button" id="na-cancel" class="button secondary">Отмена</button><button type="submit" class="button primary" id="na-save">Сохранить</button></div></form></dialog>
 </div>
 {{ scopes|json_script:'na-scopes' }}
-<script defer src="{% static 'normative-area.js' %}?v=20260928-controls-2"></script>
+<script defer src="{% static 'normative-area.js' %}?v=20260928-source-word-1"></script>
 {% endblock %}

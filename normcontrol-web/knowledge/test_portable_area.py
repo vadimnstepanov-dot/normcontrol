@@ -177,18 +177,30 @@ class PortableTests(TestCase):
         from knowledge_v2.publication import material
         from knowledge_v2.review import ledger
         doc=self.independent_document()
+        from pathlib import Path
+        from knowledge_v2.tests.test_ingest import docx
+        from .models import SourceUpload
+        extra=self.upload(docx(Path(self.tmp.name)/'approval.docx',paragraph='Справочный акт утверждения.').read_bytes(),name='approval.docx').json()['sources'][0]['id']
+        self.assertTrue(self.bridge.once())
+        original=SourceUpload.objects.get(pk=extra)
+        doc['sources'].append(dict(id=extra,filename=original.filename,sha256=original.sha256))
         # An actual obligation is needed for a usable release ledger.
         card=doc['requirements'][0]['payload']
-        card.update(modality='mandatory',composition={'atom':'duty'},obligations=[dict(id='duty',description='Check duty',action='check',subject='document',object='duty')])
+        card.update(modality='mandatory',composition={'atom':'duty'},obligations=[dict(id='duty',text='Check duty')])
         term=copy.deepcopy(doc['requirements'][0]);term['id']=str(uuid.uuid4())
         term['payload'].update(entity_type='definition',term='Термин',glossary_kind='term',obligations=[])
         for key in ('local_profile','profile_id'):term['payload'].pop(key,None)
         doc['glossary']=dict(entries=[term],choices=[dict(key='term:термин',active_entry_id=term['id'])])
+        disabled=copy.deepcopy(doc['requirements'][0]);disabled['id']=str(uuid.uuid4())
+        disabled['payload']['description']='Uncertain candidate intentionally disabled.'
+        doc['requirements'].append(disabled)
+        doc['controls']=[dict(kind='card',id=disabled['id'],enabled=False,deleted=False)]
         r=self.post(doc,True);self.assertEqual(r.status_code,202,r.content)
         with patch.dict(os.environ,KNOWLEDGE_EXPERT_ONLY='1'):self.assertTrue(self.bridge.once())
         self.dataset.refresh_from_db();self.bridge.normative_index=(FakeEncoder(),FakeVectors())
-        c=services.prepare_selected_sources(self.user,self.dataset.pk,[str(self.dataset.sources.get().pk)],self.dataset.metadata_revision,'prepare-direct')
+        c=services.prepare_selected_sources(self.user,self.dataset.pk,[str(s.pk) for s in self.dataset.sources.all()],self.dataset.metadata_revision,'prepare-direct')
         self.assertEqual(c.payload['mode'],'imported_reference')
+        self.assertTrue(c.payload['imports'][extra]['reference_only'])
         from knowledge_v2.prepare import prepare
         from knowledge_v2.store import Conflict,checksum
         tampered=copy.deepcopy(c.payload)
@@ -210,3 +222,22 @@ class PortableTests(TestCase):
         rows=ledger(self.store,str(release.pk),list(policy['profiles'].values()),{},lambda *_:True,lambda *_:True)
         self.assertTrue(rows)
         self.assertTrue(all('critical_context_incomplete' in x['execution_issues'] for x in rows))
+
+    def test_direct_import_retains_multiple_profile_memberships(self):
+        doc=self.independent_document()
+        second=copy.deepcopy(doc['profiles'][0]);second['id']=str(uuid.uuid4())
+        second['definition']['name']='Другой вид документа';doc['profiles'].append(second)
+        doc['requirements'][0]['payload']['profile_ids']=[doc['profiles'][0]['id'],second['id']]
+        r=self.post(doc,True);self.assertEqual(r.status_code,202,r.content)
+        with patch.dict(os.environ,KNOWLEDGE_EXPERT_ONLY='1'):self.assertTrue(self.bridge.once())
+        imported=ExpertCard.objects.get(source__normative_set=self.dataset)
+        self.assertEqual(len(imported.payload['profile_ids']),2)
+        self.assertNotIn(second['id'],imported.payload['profile_ids'])
+
+    def test_forged_additional_origin_rolls_back_import(self):
+        doc=self.independent_document();source=doc['sources'][0]
+        doc['requirements'][0]['payload']['additional_origins']=[dict(source_id=source['id'],source_sha256=source['sha256'],locator=doc['requirements'][0]['payload']['citations'][0]['locator'],verbatim='Forged secondary definition.')]
+        r=self.post(doc,True);self.assertEqual(r.status_code,202,r.content)
+        with patch.dict(os.environ,KNOWLEDGE_EXPERT_ONLY='1'):
+            with self.assertRaisesRegex(ValueError,'Additional origin text differs'):self.bridge.once()
+        self.assertEqual(ExpertCard.objects.filter(source__normative_set=self.dataset).count(),0)

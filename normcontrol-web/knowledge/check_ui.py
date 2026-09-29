@@ -83,7 +83,7 @@ def monitor(request,job_id):
                     explanation=decision_explanation(decision)+visual_note,evidence=evidence,suggestion='',
                     source={'document_name':obligation.get('source',{}).get('filename',''),
                             'clause':citation.get('locator',''),'source_quote':citation.get('quote','')}))
-        run=SimpleNamespace(report={'documents':documents},snapshot={})
+        run=SimpleNamespace(report={'documents':documents,'template_comparison':job.summary.get('template_comparison')},snapshot={})
         batch=SimpleNamespace(name=job.batch.name,get_status_display=lambda:'Завершена' if job.state=='completed' else 'С ограничениями')
         trace_errors=job.summary.get('traceability',{}).get('errors',{})
         errors=[dict(id=k,stage='vision' if k.startswith('visual:') else 'links' if k.removeprefix('trace:') in trace_errors else 'sto',stage_label='Изображения' if k.startswith('visual:') else 'Междокументная логика' if k.removeprefix('trace:') in trace_errors else 'Требования СТО',state='failed',attempts=1,error=v.get('error','Причина неизвестна'))

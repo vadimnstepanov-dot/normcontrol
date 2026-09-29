@@ -57,6 +57,7 @@ def search(request,identity):
 
 @boundary({'GET', 'POST'})
 def areas(request):
+    from .object_control import metadata
     if request.method == 'POST':
         from .services import create_set
         d = fields(request, {'name', 'scope_id'}, {'description'})
@@ -67,7 +68,7 @@ def areas(request):
         return JsonResponse(set_json(row), status=201)
     return JsonResponse({'areas': [dict(set_json(x), description=x.description, automatic=x.automatic,counts=metrics(x),updated=(x.active_release.created if x.active_release_id else x.created).isoformat(),
         can_edit=allowed(request.user, x.scope, 'review'), can_upload=allowed(request.user, x.scope, 'upload'))
-        for x in NormativeSet.objects.select_related('scope','active_release').filter(purpose='normative').order_by('name') if allowed(request.user, x.scope, 'read')]})
+        for x in NormativeSet.objects.select_related('scope','active_release').filter(purpose='normative').order_by('name') if allowed(request.user, x.scope, 'read') and not metadata('area',x.pk)['deleted']]})
 
 
 @boundary({'GET', 'POST'})

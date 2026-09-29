@@ -75,7 +75,7 @@ def card(request,identity):
     require(request.user,row.source.normative_set.scope,'read')
     if request.method=='POST':
         d=fields(request,{'action','expected_revision'},{'profile_id','reason','patch','parts','others','description','acknowledge_questions','split_logic',
-            'resolution_reason','refinement_kind','condition','basis_index'})
+            'resolution_reason','review_import_completeness','refinement_kind','condition','basis_index'})
         c=expert.submit(request.user,identity,d,request.headers.get('Idempotency-Key'))
         return JsonResponse(dict(command_id=str(c.pk),state=c.state),status=202)
     profile=profile_for(request,row.source.normative_set.scope)

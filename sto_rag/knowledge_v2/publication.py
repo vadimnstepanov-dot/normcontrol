@@ -73,6 +73,7 @@ def materialize(store,payload,original_ids,*,analyses=None):
         current=context_digest(fp,profiles,context_items)
         levels=trust(card,state.get('approval'),current,row['provenance'])
         direct=owners(fp,profiles)
+        if imported:direct=sorted(set(direct)|{p for p in card.get('profile_ids',[]) if p in index})
         memberships=[compiled_profiles[x] for x in direct]
         # Raw extractor profiles are retained when no configurable profile exists.
         if not profiles:memberships=card.get('profile_ids') or [card.get('effective_profile_id') or card.get('profile_id')]
@@ -122,7 +123,13 @@ def materialize(store,payload,original_ids,*,analyses=None):
             refs.add((dep_id,1))
         for i,atom in enumerate(card.get('obligations',[])):
             atom_id=str(uuid.uuid5(uuid.UUID(rid),'atom:'+str(i)))
-            store.put_record(sid,'obligation',atom_id,1,dict(atom,requirement_ref=[rid,1]));refs.add((atom_id,1))
+            normalized=copy.deepcopy(atom)
+            if not {'action','subject','object'}<=set(normalized):
+                text=normalized.get('text') or normalized.get('description')
+                if not isinstance(text,str) or not text.strip():raise ValueError('Atomic obligation has no checkable text')
+                normalized.setdefault('action','проверить');normalized.setdefault('subject','проверяемый документ');normalized.setdefault('object',text)
+                normalized.setdefault('description',text)
+            store.put_record(sid,'obligation',atom_id,1,dict(normalized,requirement_ref=[rid,1]));refs.add((atom_id,1))
         affected=sorted(p for p in index if set(direct)&closure[p])
         catalog.append(dict(kind='requirement',lineage=item['id'],ref=[rid,1],base_id=item['base_id'],revision=item['revision'],
             source_id=item['source_id'],source_family=selection['families'][item['source_id']],

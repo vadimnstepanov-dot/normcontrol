@@ -6,6 +6,7 @@ class AccessProfile(models.Model):
     user=models.OneToOneField(User,on_delete=models.CASCADE)
     must_change_password=models.BooleanField(default=False)
     can_view_others=models.BooleanField(default=False)
+    is_expert=models.BooleanField(default=False)
 
 class Batch(models.Model):
     id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
