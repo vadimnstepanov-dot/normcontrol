@@ -24,6 +24,9 @@ class EngineTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
         runtime=patch('nc5.engine.DATA',self.root/'runtime');runtime.start();self.addCleanup(runtime.stop)
+        from nc5.tests.catalog_fixture import install
+        install(self.root/'runtime')
+        catalog=patch('nc5.catalog.DATA',self.root/'runtime');catalog.start();self.addCleanup(catalog.stop)
         d=Document();d.add_paragraph('ЧАСТНОЕ ТЕХНИЧЕСКОЕ ЗАДАНИЕ');d.add_heading('1 Сведения',1);d.add_paragraph('Сведения должна храниться.');self.path=self.root/'example.docx';d.save(self.path)
         self.e=Engine(config(),Store(self.root/'db'));self.e.client=Fake()
     def test_end_to_end_queue_and_verification(self):
@@ -31,6 +34,20 @@ class EngineTests(unittest.TestCase):
         self.assertNotEqual(self.e.store.job(j)['state'],'failed');self.assertTrue(all(t['state']=='done' for t in self.e.store.tasks(j)))
         findings=self.e.store.findings(j);self.assertEqual(len(findings),1);self.assertEqual(findings[0]['status'],'confirmed');self.assertIn('пункт 1 «Сведения»',findings[0]['evidence'][0]['address'])
         self.assertIn('cross',self.e.store.job(j)['data']['derived'])
+        from knowledge_v2.performance import summary,path_for
+        timing=summary(path_for(self.root,j))
+        self.assertFalse(timing['incomplete'])
+        self.assertIn('nc5.parse',timing['phases'])
+        self.assertIn('nc5.stage.verify',timing['phases'])
+        self.assertIn('first_confirmed_finding_seconds',timing['observations'])
+        from nc5.report import export
+        from nc5.common import read
+        with patch('nc5.report.DATA',self.root/'runtime'):
+            folder=export(self.e,j)
+        self.assertFalse(read(folder/'report.json')['metrics']['performance']['incomplete'])
+        exported=summary(path_for(self.root,j))
+        self.assertEqual(exported['completed_sessions'],2)
+        self.assertIn('nc5.export',exported['phases'])
         second=self.e.create([str(self.path)])
         self.assertTrue(self.e.store.job(second)['data']['options']['check_sto'])
     def test_sto_planning_builds_one_registry_and_internal_evidence_map(self):

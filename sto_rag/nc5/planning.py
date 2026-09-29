@@ -1,5 +1,6 @@
 """Generic source-preserving obligations and bounded comparison planning."""
 import re,copy
+from knowledge_v2.performance import measured
 from collections import defaultdict
 from difflib import SequenceMatcher
 from .common import digest
@@ -11,6 +12,7 @@ def block_key(block):
     """Stable identity for an exact source fragment used by internal planning."""
     return digest([block.get('document',''),block.get('locator',''),block.get('offset',0),block.get('text','')])[:20]
 
+@measured('nc5.registry')
 def document_registry(doc):
     """Extract immutable navigation and literal facts once, without an LLM call."""
     headings=[{k:h[k] for k in ('locator','title','address') if k in h} for h in doc.get('headings',[])]

@@ -14,6 +14,10 @@ from unittest.mock import patch
 class Documents(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.path=Path(self.tmp.name)/'doc.docx'
+        from nc5.tests.catalog_fixture import install
+        directory=Path(self.tmp.name)/'catalog'
+        install(directory)
+        catalog=patch('nc5.catalog.DATA',directory);catalog.start();self.addCleanup(catalog.stop)
     def test_macros_and_entities_rejected(self):
         for name,data in [('word/vbaProject.bin',b'fake'),('word/document.xml',b'<!DOCTYPE x>')]:
             with zipfile.ZipFile(self.path,'w') as z:z.writestr(name,data)

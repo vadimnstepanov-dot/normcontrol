@@ -1,9 +1,11 @@
 """Compare complete-document packing with grouped exhaustive section passes."""
 from .store import checksum
+from .performance import measured
 from bisect import bisect_left
 
 VERSION='context-budget-v5'
 
+@measured('v2.budget_plan')
 def plan(rows,blocks,client,scope,max_group=8):
     from .review import request
     if not rows or not blocks:return [],list(rows)

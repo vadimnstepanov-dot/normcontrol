@@ -1,5 +1,6 @@
 import json
 import copy
+from knowledge_v2.performance import measured, http_measured, observe
 import time
 import urllib.request
 import os
@@ -32,6 +33,7 @@ def output_budget(config,payload):
 
 class Client:
     def __init__(self,config):self.config=config;self.context=config['context'];self.props={};self.signature='';self.count_cache={}
+    @http_measured
     def http(self,path,payload=None,timeout=None):
         headers={'Content-Type':'application/json'}
         key=os.getenv('NORMCONTROL_LLM_API_KEY')
@@ -113,8 +115,10 @@ class Client:
             'tools':[],'tool_choice':'none','stream':False,'temperature':0.1,'max_tokens':output_budget(self.config,payload),
             'chat_template_kwargs':{'enable_thinking':bool(payload['stage']=='verify' and self.config.get('verify_reasoning')),'preserve_thinking':False},
             'response_format':{'type':'json_schema','json_schema':{'name':'review_v5','strict':True,'schema':schema}}}
+    @measured('nc5.count')
     def count(self,payload):
         key=digest(payload)
+        observe('nc5.count_cache_hit' if key in self.count_cache else 'nc5.count_cache_miss')
         if key in self.count_cache:return self.count_cache[key]
         req=self.request(payload);args={k:req[k] for k in ('messages','tools','tool_choice','chat_template_kwargs')}
         if payload.get('images'):
@@ -129,6 +133,7 @@ class Client:
         self.count_cache[key]=n+schema_tokens
         if len(self.count_cache)>2000:self.count_cache.clear()
         return n+schema_tokens
+    @measured('nc5.generate')
     def generate(self,payload):
         tokens=self.count(payload)
         budget=output_budget(self.config,payload)

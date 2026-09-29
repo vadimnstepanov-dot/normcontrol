@@ -1,4 +1,5 @@
 import copy
+from knowledge_v2.performance import measured, profiled, stage_measured
 import json
 import re
 import threading
@@ -39,6 +40,7 @@ class Engine:
         value=self.cache.get(jid)
         if value is None:value=read(DATA/'jobs'/jid/'documents.json');self.cache.put(jid,value)
         return value
+    @measured('nc5.prepare')
     def prepare(self,jid):
         job=self.store.job(jid);data=job['data'];cat=load_catalog(data['catalog']);probe=self.client.probe();docs=[]
         from .conversion import prepare_word,checksum
@@ -178,6 +180,7 @@ class Engine:
             result['source_inventory']=completeness(doc,blocks);result['outline']=focused_outline(doc,blocks)
             result['outline_inventory']={'total':len(doc.get('headings',[])),'sha256':digest(doc.get('headings',[])),'included':len(result['outline'])}
         return result
+    @measured('nc5.plan')
     def enqueue_bounded(self,jid,stage,payload,data,depth=0):
         tokens=self.client.count(payload)
         if tokens+output_budget(self.config,payload)+self.config['margin']<=self.client.context:
@@ -216,6 +219,7 @@ class Engine:
         elif payload.get('blocks'):
             for part in split_blocks(payload['blocks']):self.enqueue_bounded(jid,stage,{**payload,'blocks':part,'scope':'split_subset','source_inventory':{'document_complete':False,'complete_sections':[]},'split_depth':depth+1},data,depth+1)
         else:raise BudgetError('Служебная часть не помещается')
+    @profiled('nc5')
     @logged
     def run(self,jid):
         if not self.lock.acquire(False):raise ValueError('GPU уже занят другим заданием')
@@ -277,6 +281,8 @@ class Engine:
     def start(self,jid):
         if self.lock.locked():raise ValueError('Другое задание уже выполняется')
         self.thread=threading.Thread(target=self.run,args=(jid,),daemon=True);self.thread.start()
+    @measured('nc5.execute')
+    @stage_measured('nc5.stage', STAGES)
     def execute(self,task):
         from knowledge_v2.check_log import emit
         emit('task',dict(id=task['id'],stage=task['stage'],payload=task['payload']))

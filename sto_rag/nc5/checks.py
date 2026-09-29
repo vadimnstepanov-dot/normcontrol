@@ -1,4 +1,5 @@
 import re
+from knowledge_v2.performance import measured
 from decimal import Decimal,InvalidOperation
 from collections import defaultdict
 from .common import digest
@@ -81,6 +82,7 @@ def decimal(text):
     if not re.fullmatch(r'-?\d+(?:\.\d+)?',text):raise InvalidOperation
     return Decimal(text)
 
+@measured('nc5.deterministic')
 def deterministic(doc):
     findings=[];bytable=defaultdict(list);latin={b['text'].strip() for b in doc['blocks'] if re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*',b['text'].strip())}
     for b in doc['blocks']:

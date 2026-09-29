@@ -7,7 +7,7 @@ def logged(fn):
     @functools.wraps(fn)
     def wrapper(engine,jid,*args,**kwargs):
         job=engine.store.job(jid)
-        if not job['data']['options'].get('logging_enabled'):return fn(engine,jid,*args,**kwargs)
+        if not job['data'].get('options',{}).get('logging_enabled'):return fn(engine,jid,*args,**kwargs)
         journal=Journal(DATA/'check-logs',jid);token=active.set(journal)
         try:
             emit('passport',job['data'])

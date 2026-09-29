@@ -1,5 +1,6 @@
 """Classify package titles against declared profile/link types, with exact evidence."""
 import json,re
+from .performance import measured
 from .store import checksum,Conflict
 from .model_queue import model_turn
 from .structure import atomic_json
@@ -48,6 +49,7 @@ def declared_stages(records):
         if record['kind'] in ('profile','publication_policy'):visit(record['payload'])
     return values
 
+@measured('v2.classify')
 def classify(store,docs,types,client,stages=None):
     if not types:return
     for d in docs:

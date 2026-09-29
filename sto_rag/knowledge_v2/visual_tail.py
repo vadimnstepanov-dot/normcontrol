@@ -1,5 +1,6 @@
 """Deferred, checkpointed image checks. Pixel observations never approve a norm."""
 import base64,json,math,shutil,time,threading,re
+from .performance import measured
 from pathlib import Path
 from .store import checksum,Conflict
 from .ingest import sha256,inspect
@@ -8,6 +9,7 @@ from .structure import Cache,atomic_json,office_convert
 VERSION='visual-tail-v1'
 IMAGE_RESERVE=8192
 
+@measured('v2.vision.prepare')
 def prepare(paths,docs,store):
     """Detect/extract once on CPU. Rendering and inference are deferred."""
     for source,doc in zip(paths,docs):
@@ -64,6 +66,7 @@ def prepare(paths,docs,store):
         atomic_json(saved,dict(inventory=inventory,digest=checksum(inventory)))
         doc['visual_inventory']=inventory
 
+@measured('v2.vision.plan')
 def plan(rows,docs,client):
     from .review import request
     batches=[];unplanned=[]
@@ -169,6 +172,7 @@ def complete(client,batch,stage,proposed=None):
             if not e['quote'] or e['block_id'] not in blocks or e['quote'] not in blocks[e['block_id']]:raise ValueError('Visual text quote changed')
     return decisions
 
+@measured('v2.vision.run')
 def run(store,task_id,client,authorize,on_progress,cancel=lambda:False):
     from .model_queue import model_turn
     from .model_profile import ensure

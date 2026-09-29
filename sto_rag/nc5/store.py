@@ -1,5 +1,6 @@
 """SQLite transactions are the source of truth; the LRU contains only reproducible data."""
 import json
+from knowledge_v2.performance import milestone
 import re
 import sqlite3
 import threading
@@ -127,6 +128,7 @@ class Store:
         fid=digest([jid,category,evidence,identity])[:24]
         value={**value,'id':fid}
         with self.connect() as c: c.execute('INSERT OR IGNORE INTO findings VALUES(?,?,?,?)',(fid,jid,status,dumps(value)))
+        if status=='confirmed':milestone('first_confirmed_finding_seconds')
         return fid
     def findings(self,jid):
         with self.connect() as c: return [{**json.loads(r['data']),'status':r['status']} for r in c.execute('SELECT * FROM findings WHERE job=? ORDER BY rowid',(jid,))]
@@ -146,6 +148,7 @@ class Store:
                 if verified_explanation and status=='confirmed':d.setdefault('initial_explanation',d['explanation']);d['explanation']=reason
                 if suggestion is not None and status=='confirmed':d.setdefault('initial_suggestion',d.get('suggestion',''));d['suggestion']=suggestion
                 c.execute('UPDATE findings SET status=?,data=? WHERE id=?',(status,dumps(d),fid))
+                if status=='confirmed':milestone('first_confirmed_finding_seconds')
     def cached(self,key):
         with self.connect() as c: row=c.execute('SELECT data FROM cache WHERE key=?',(key,)).fetchone()
         return json.loads(row[0]) if row else None

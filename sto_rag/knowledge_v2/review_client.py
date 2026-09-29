@@ -1,5 +1,6 @@
 """llama.cpp transport with real template token accounting, no inference tools."""
 import json
+from .performance import measured, http_measured, observe
 import os
 import urllib.request
 import urllib.parse
@@ -31,6 +32,7 @@ class LlamaClient:
             self.signature = checksum(dict(props=props, model=self.model, temperature=0, thinking=False,wire_version=WIRE_VERSION))
         self._counts = {};self._schema_counts = {}
 
+    @http_measured
     def http(self, path, value=None, timeout=None):
         headers = {'Content-Type': 'application/json'}
         if os.getenv('NORMCONTROL_LLM_API_KEY'):
@@ -123,8 +125,10 @@ class LlamaClient:
             chat_template_kwargs={'enable_thinking': False},
             response_format=dict(type='json_schema', json_schema=dict(name='normative_review_v2', strict=True, schema=schema)))
 
+    @measured('v2.count')
     def count(self, payload):
         key = checksum(payload)
+        observe('v2.count_cache_hit' if key in self._counts else 'v2.count_cache_miss')
         if key not in self._counts:
             req = self.request(payload)
             template = self.http('/apply-template', {'messages': req['messages'], 'chat_template_kwargs': {'enable_thinking': False}})['prompt']
@@ -140,6 +144,7 @@ class LlamaClient:
             self._counts[key] = tokens
         return self._counts[key]
 
+    @measured('v2.complete')
     def complete(self, payload):
         from .model_profile import ensure
         ensure(self,'text')

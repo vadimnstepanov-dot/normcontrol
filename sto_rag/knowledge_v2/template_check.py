@@ -4,6 +4,7 @@ The template comes from originals pinned by the release, not model knowledge.
 Content decisions are attached from the ordinary normative review afterwards.
 """
 import re
+from .performance import measured
 from pathlib import Path
 from .ingest import parse, sha256, PARSER_VERSION
 from .store import checksum, Conflict
@@ -154,6 +155,7 @@ def compare(doc, templates, aliases, issues=()):
     return base
 
 
+@measured('v2.template')
 def build(store, docs, selected_records, facts):
     templates=[];issues=[]
     for records in selected_records:

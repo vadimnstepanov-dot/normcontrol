@@ -1,4 +1,5 @@
 import copy
+from knowledge_v2.performance import measured
 import re
 import zipfile
 from collections import defaultdict
@@ -41,8 +42,9 @@ def classify(blocks,cat):
     _,p,b=scored[0]
     return {'profile_id':p['id'],'type':p['code'],'confidence':.95,'basis':[{'locator':b['locator'],'quote':b['text']}], 'name':p['name']}
 
+@measured('nc5.parse')
 def parse(path,cat):
-    from quality_review import units_for_document
+    from document_units import units_for_document
     from word_compact import N,Q,plain
     path=inspect_file(path);d,legacy,oldprofile,units=units_for_document(str(path))
     blocks=[copy.deepcopy(b) for u in units for b in u['blocks']]

@@ -5,6 +5,7 @@ import uuid
 import os
 import threading
 from .store import checksum
+from .performance import span
 
 
 @contextmanager
@@ -19,17 +20,18 @@ def model_turn(store,client):
         db.execute('INSERT INTO model_tickets VALUES(?,?,?,?,?)',(ticket,model,time.time(),time.time()+timeout+60,'waiting'))
     deadline=time.monotonic()+timeout
     try:
-        while True:
-            with store.connection() as db:
-                db.execute('BEGIN IMMEDIATE')
-                db.execute('DELETE FROM model_tickets WHERE expires<?',(time.time(),))
-                busy=db.execute("SELECT 1 FROM model_tickets WHERE model=? AND state='running'",(model,)).fetchone()
-                first=db.execute("SELECT id FROM model_tickets WHERE model=? AND state='waiting' ORDER BY created,id LIMIT 1",(model,)).fetchone()
-                if not busy and first and first['id']==ticket:
-                    db.execute("UPDATE model_tickets SET state='running',expires=? WHERE id=?",(time.time()+timeout+60,ticket))
-                    break
-            if time.monotonic()>=deadline:raise TimeoutError('Model turn queue timed out; retry from durable cursor')
-            time.sleep(.2)
+        with span('queue.wait'):
+            while True:
+                with store.connection() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    db.execute('DELETE FROM model_tickets WHERE expires<?',(time.time(),))
+                    busy=db.execute("SELECT 1 FROM model_tickets WHERE model=? AND state='running'",(model,)).fetchone()
+                    first=db.execute("SELECT id FROM model_tickets WHERE model=? AND state='waiting' ORDER BY created,id LIMIT 1",(model,)).fetchone()
+                    if not busy and first and first['id']==ticket:
+                        db.execute("UPDATE model_tickets SET state='running',expires=? WHERE id=?",(time.time()+timeout+60,ticket))
+                        break
+                if time.monotonic()>=deadline:raise TimeoutError('Model turn queue timed out; retry from durable cursor')
+                time.sleep(.2)
         previous=getattr(client,'_model_ticket',None);client._model_ticket=ticket
         stop=threading.Event();lost=threading.Event()
         def renew():
@@ -41,7 +43,8 @@ def model_turn(store,client):
                 except Exception:lost.set();return
         thread=threading.Thread(target=renew,daemon=True);thread.start()
         try:
-            yield ticket
+            with span('queue.held'):
+                yield ticket
             if lost.is_set():raise RuntimeError('Exclusive model turn lost')
         finally:
             stop.set();thread.join(timeout=2);client._model_ticket=previous

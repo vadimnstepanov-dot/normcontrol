@@ -5,6 +5,7 @@ and evidenced project facts; source text never controls execution or permissions
 """
 from collections import Counter
 import html
+from .performance import measured, span, observe
 import json
 from pathlib import Path
 import re
@@ -216,6 +217,7 @@ def refinement_effects(parent,records,effective,definitions,facts,verify_fact,ap
     return issues
 
 
+@measured('v2.parse')
 def corpus(paths):
     """Extract once. Preserve exact text, structure, numeric facts and parse gaps."""
     docs = []
@@ -388,6 +390,7 @@ class ReviewRunner:
         with store.connection() as db:
             db.execute('CREATE TABLE IF NOT EXISTS review_controls(task_id TEXT PRIMARY KEY,paused INTEGER NOT NULL)')
 
+    @measured('v2.plan')
     def create(self, paths, release_profiles, facts, verify_fact, *, job_id=None, prepared_docs=None, experience_releases=(), template_comparison=None):
         job_id = job_id or str(uuid.uuid4())
         docs = corpus(paths) if prepared_docs is None else prepared_docs
@@ -506,6 +509,7 @@ class ReviewRunner:
         # One bounded retry for malformed/truncated structured output. Transport
         # failures use the durable task's attempt budget, not an endless loop.
         for attempt in range(2):
+            if attempt:observe('v2.retry')
             try:
                 self._check(payload)
                 check = batch['payload']
@@ -542,7 +546,9 @@ class ReviewRunner:
     def _complete(self,request):
         """Record real production timings, without benchmarks or hardware polling."""
         self.client.last_usage={};self.client.last_timings={};started=time.monotonic()
-        try:return self.client.complete(request)
+        try:
+            with span('v2.verify' if request.get('stage')=='verify' else 'v2.check'):
+                return self.client.complete(request)
         finally:
             timings={k:v for k,v in getattr(self.client,'last_timings',{}).items()
                      if k in ('prompt_n','prompt_ms','prompt_per_second','predicted_n','predicted_ms','predicted_per_second','cache_n','draft_n','draft_n_accepted') and type(v) in (int,float)}
@@ -593,6 +599,7 @@ class ReviewRunner:
             examples.pop()
         return request_payload
 
+    @measured('v2.batch')
     def run_once(self, task_id=None):
         with self.store.connection() as db:
             ready = db.execute("SELECT t.id FROM tasks t LEFT JOIN review_controls c ON c.task_id=t.id WHERE t.operation='review.run' AND json_extract(t.payload,'$.owner')=? AND (t.state='pending' OR (t.state='running' AND t.lease_until<=?)) AND COALESCE(c.paused,0)=0 ORDER BY t.created,t.id LIMIT 1", (self.owner,time.time())).fetchone()

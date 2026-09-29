@@ -16,6 +16,7 @@ normcontrol-web/data/
 normcontrol-web/static-collected/
 *.sqlite3
 *.lock
+!requirements-test.lock
 
 # Private configuration
 .env

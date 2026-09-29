@@ -1,5 +1,6 @@
 """Execute a portal-selected v2 check locally with an immutable knowledge snapshot."""
 import hashlib
+from .performance import profiled, span, milestone
 import json
 import tempfile
 import time
@@ -12,6 +13,7 @@ from .store import checksum,Conflict,NotReady
 
 from .check_log import logged,emit
 
+@profiled('v2')
 @logged
 def execute(bridge,claim,download,client=None,experience_index=None):
     payload=claim['payload'];store=bridge.store
@@ -45,7 +47,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                 raise ValueError('Document filename')
             path=Path(temporary)/(str(index)+'-'+name)
             digest=hashlib.sha256();size=0
-            with download(claim['command_id'],payload['job_id'],declared['id'],claim['lease']) as source,path.open('wb') as target:
+            with span('v2.download'), download(claim['command_id'],payload['job_id'],declared['id'],claim['lease']) as source,path.open('wb') as target:
                 while True:
                     data=source.read(1024*1024)
                     if not data:break
@@ -155,6 +157,9 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         phase='text'
         progress_floor=0
         def progress(task_id,completed,total,decisions=None):
+            if completed:milestone('first_completed_batch_seconds')
+            if any(d.get('outcome')=='violated' for d in (decisions or [])):
+                milestone('first_violation_preview_seconds')
             from .check_log import active
             journal=active.get()
             if journal:
@@ -280,4 +285,5 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                 'visual_assets':sum(len(d.get('visual_inventory',{}).get('items',[])) for d in docs),'visual_unplanned':visual_unplanned} if visual_enabled else {})),
             visuals=dict(enabled=visual_enabled,total=visual_total,completed=len((visual_result or {}).get('results',{})),
                 errors=len(visual_errors),unplanned=visual_unplanned,model_calls=[c for v in (visual_result or {}).get('results',{}).values() for c in v.get('model_calls',[])]),performance=report.get('performance',{}))
-        return store.remember_result(claim['command_id'],'review.execute',payload,result)
+        with span('v2.persist_report'):
+            return store.remember_result(claim['command_id'],'review.execute',payload,result)

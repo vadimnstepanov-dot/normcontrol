@@ -1,9 +1,11 @@
 """Cheap recall pass: hypotheses for verification, never automatic verdicts."""
 import difflib,re
+from knowledge_v2.performance import measured
 from collections import Counter
 from .quality_gate import morph
 
 WORDS=re.compile(r'\b[А-Яа-яЁё]{5,}\b')
+@measured('nc5.language_candidates')
 def candidates(doc):
     m=morph()
     if not m:return []

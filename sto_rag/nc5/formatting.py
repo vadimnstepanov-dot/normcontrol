@@ -1,5 +1,6 @@
 """Measure inherited Word properties; page-dependent checks require a rendered artifact."""
 import re
+from knowledge_v2.performance import measured
 import subprocess
 from pathlib import Path
 from zipfile import ZipFile
@@ -131,6 +132,7 @@ def compact_results(findings,coverage):
             compact.append(value)
     return result,compact
 
+@measured('nc5.formatting')
 def check(doc,cat,mode):
     if mode=='off':return [],[{'state':'skipped_setting','check':'formatting'}]
     measurements=measure(doc['path']);by={b['locator']:b for b in doc['blocks']};findings=[];coverage=[]

@@ -1,5 +1,6 @@
 """Versioned, evidenced package trace. Missing catalogue edges are never violations."""
 import json,time,threading,uuid
+from .performance import measured
 from collections import Counter
 from .store import checksum,Conflict
 from .applicability import evaluate,validate_expression
@@ -76,6 +77,7 @@ def links_for(store,releases,authorize):
     return out
 
 
+@measured('v2.trace.plan')
 def plan(links,docs,facts,verify,client):
     batches=[];initial=[]
     for link in links:
@@ -141,6 +143,7 @@ def validate_trace(payload,raw):
     return rows
 
 
+@measured('v2.trace.run')
 def run(store,job_id,links,docs,facts,verify,client,authorize,checkpoint):
     """One durable result per link, including successful positive evidence."""
     key=checksum([VERSION,job_id,links,[d['sha256'] for d in docs],facts,client.signature])

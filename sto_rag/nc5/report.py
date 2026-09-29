@@ -1,4 +1,6 @@
 import html
+from knowledge_v2.performance import measured, summary, path_for, profiled
+from pathlib import Path
 import json
 import time
 from collections import Counter
@@ -39,6 +41,7 @@ def build(engine,jid):
     metrics['retries']=sum(max(0,n-1) for n in counts.values()) if measured else None
     metrics['retry_measurement']='event_log' if measured else 'not_recorded_by_legacy_runner'
     metrics['by_stage']={}
+    metrics['performance']=summary(path_for(Path(engine.store.path).parent,jid))
     from .normative_contract import coverage_summary
     metrics['normative_coverage']=coverage_summary(coverage,findings)
     for stage in dict.fromkeys(t['stage'] for t in tasks):
@@ -89,5 +92,11 @@ def html_report(report):
     return '<!doctype html><html lang="ru"><meta charset="utf-8"><title>Нормоконтроль</title><style>body{font:16px/1.6 system-ui;max-width:1060px;margin:40px auto;padding:24px;color:#183047;background:#f5f7fa}h1,h2{color:#114a56}h3{border-top:1px solid #ccd8de;padding-top:24px}blockquote{background:white;border-left:4px solid #189e91;padding:16px;white-space:pre-wrap}p{overflow-wrap:anywhere}</style>'+''.join(body)+'</html>'
 
 def export(engine,jid):
-    r=build(engine,jid);folder=DATA/'jobs'/jid;write(folder/'report.json',r)
+    # Snapshot completed review timings before opening the separate export session.
+    return _write_report(engine,jid,build(engine,jid))
+
+@profiled('nc5')
+@measured('nc5.export')
+def _write_report(engine,jid,r):
+    folder=DATA/'jobs'/jid;write(folder/'report.json',r)
     (folder/'report.md').write_text(markdown(r),encoding='utf-8');(folder/'report.html').write_text(html_report(r),encoding='utf-8');return folder

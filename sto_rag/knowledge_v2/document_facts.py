@@ -1,5 +1,6 @@
 """Profile-driven facts, pinned to exact document evidence; never assume missing facts."""
 from .store import checksum
+from .performance import measured
 from .structure import atomic_json
 from .model_queue import model_turn
 
@@ -68,6 +69,7 @@ def validate(doc,names,rows):
     if seen!=set(names):raise ValueError('Fact cardinality')
     return facts
 
+@measured('v2.facts')
 def extract(store,doc,names,client,basis=None):
     if not names:return {}
     # Identity facts have a targeted evidence scope. An excluded class may only
