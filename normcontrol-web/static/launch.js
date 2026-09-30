@@ -1,6 +1,7 @@
 (() => {
   const form=document.getElementById('launch-form');if(!form)return;
   const input=document.getElementById('documents'),list=document.getElementById('file-list'),error=document.getElementById('upload-error');
+  document.getElementById('prompt-attach')?.addEventListener('click',()=>input?.click());
   const button=document.getElementById('launch-submit'),readiness=document.getElementById('launch-readiness'),summary=document.getElementById('launch-error-summary');
   const scopes=JSON.parse(document.getElementById('launch-normative-scopes').textContent),experiences=JSON.parse(document.getElementById('launch-experience-scopes').textContent);
   let selected=[],submitting=false;const existing=Number(form.dataset.existingCount||0);
@@ -30,7 +31,7 @@
       dt.items.add(file);const row=messageNode('div','');row.className='file-item';const sizeText=file.size<1024*1024?`${Math.max(1,Math.round(file.size/1024))} КБ`:`${(file.size/1024/1024).toFixed(1)} МБ`;const name=messageNode('span',file.name),size=messageNode('small',sizeText),remove=messageNode('button','Удалить');
       const role=document.createElement('select');role.setAttribute('aria-label','Роль '+file.name);[['target','Проверить'],['approved_reference','Как основание']].forEach(([value,label])=>{const option=messageNode('option',label);option.value=value;role.append(option);});role.value=roles.get(file)||'target';roles.set(file,role.value);role.onchange=()=>{roles.set(file,role.value);roleInput.value=JSON.stringify(selected.map(f=>roles.get(f)||'target'));};
       remove.type='button';remove.setAttribute('aria-label','Удалить '+file.name);remove.addEventListener('click',()=>{selected.splice(index,1);render();});row.append(name,size,role,remove);list.append(row);
-    });input.files=dt.files;roleInput.value=JSON.stringify(selected.map(f=>roles.get(f)||'target'));update();};
+    });input.files=dt.files;roleInput.value=JSON.stringify(selected.map(f=>roles.get(f)||'target'));document.getElementById('doc-review-warning').hidden=!selected.some(f=>/\.doc$/i.test(f.name));update();};
     const add=files=>{const problems=[];for(const file of files){
       if(!/\.docx?$/i.test(file.name)){problems.push(file.name+': нужен DOC или DOCX.');continue;}
       if(file.size>50*1024*1024){problems.push(file.name+': больше 50 МБ.');continue;}

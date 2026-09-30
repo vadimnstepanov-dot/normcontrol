@@ -8,6 +8,11 @@ from django.db.models import Max,Sum
 from .forms import CHECKS
 from .models import Batch,Document,LaunchReceipt,Audit
 
+DEFAULT_REVIEW_PROMPT='Проверь приложенные документы на грамматику, логику и СТО. Приложенное утвержденное ТЗ используй как основание'
+
+def review_prompt(text):
+    return (text or '').strip() or DEFAULT_REVIEW_PROMPT
+
 def form_context(form):
     norms=[]
     if getattr(form,'norms',[]):
@@ -30,12 +35,14 @@ def launch_response(request,batch,created=True):
 
 class UploadForm(forms.Form):
     user_prompt=forms.CharField(label='Задание для проверки',max_length=6000,required=False,
-        widget=forms.Textarea(attrs={'rows':3,'placeholder':'Например: проверь ЧТЗ по СТО, грамматике и логике; ТЗ используй как основание.'}))
+        widget=forms.Textarea(attrs={'rows':3,'placeholder':DEFAULT_REVIEW_PROMPT}))
     name=forms.CharField(label='Название проверки',max_length=160,required=False,
         widget=forms.TextInput(attrs={'placeholder':'Необязательно — используем название первого файла'}))
     checks=forms.MultipleChoiceField(label='Направления проверки',choices=CHECKS,
         widget=forms.CheckboxSelectMultiple,initial=['sto','logic','language'])
     launch_key=forms.UUIDField(widget=forms.HiddenInput)
+    def clean_user_prompt(self):
+        return review_prompt(self.cleaned_data.get('user_prompt'))
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs);self.initial['launch_key']=uuid.uuid4()
 

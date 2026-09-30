@@ -6,6 +6,7 @@ from django.db.models import Max
 from django.core.exceptions import PermissionDenied
 from portal.models import Batch, WorkerRun
 from portal.forms import CHECKS
+from portal.intake import DEFAULT_REVIEW_PROMPT,review_prompt
 from portal.access import can_edit
 from .models import NormativeSet, KnowledgeCheck, Command
 from .access import allowed
@@ -61,8 +62,10 @@ class LaunchForm(forms.Form):
 
 
 class NewLaunchForm(LaunchForm):
+    def clean_user_prompt(self):
+        return review_prompt(self.cleaned_data.get('user_prompt'))
     user_prompt=forms.CharField(label='Задание для проверки',max_length=6000,required=False,
-        widget=forms.Textarea(attrs={'rows':3,'placeholder':'Например: проверь ЧТЗ по СТО, грамматике и логике; ТЗ используй как основание.'}))
+        widget=forms.Textarea(attrs={'rows':3,'placeholder':DEFAULT_REVIEW_PROMPT}))
     name=forms.CharField(label='Название проверки',max_length=160,required=False,
         widget=forms.TextInput(attrs={'placeholder':'Необязательно — используем название первого файла'}))
 

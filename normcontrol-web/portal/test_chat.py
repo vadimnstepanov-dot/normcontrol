@@ -1,5 +1,7 @@
 """Canonical launch, durable history, strict ownership and truthful exports."""
 import io,json,tempfile,uuid
+from datetime import timedelta
+from django.utils import timezone
 from unittest.mock import patch
 from django.test import TestCase,override_settings
 from django.contrib.auth.models import User
@@ -19,10 +21,46 @@ class ChatTests(TestCase):
     def post(self,**changes):
         data={'text':'Проверь грамматику и логику','key':self.key,'config':json.dumps({'roles':['target'],'checks':['logic','language']}),'documents':[document('Проверка.docx')]}
         data.update(changes);return self.client.post(self.url+'send/',data)
-    def test_default_is_chat_without_register_or_telemetry(self):
+    def test_default_is_chat_with_shared_topbar_without_register(self):
         r=self.client.get('/normcontol/')
         self.assertTemplateUsed(r,'chat.html');self.assertContains(r,'role="switch"');self.assertNotContains(r,'app.js');self.assertNotContains(r,'data-llm-status')
         self.assertFalse(AccessProfile.objects.get(user=self.user).is_expert)
+        self.assertContains(r,'llm-monitor.js');self.assertContains(r,'aria-label="Показатели локальной модели"')
+        from lxml import html
+        soup=html.fromstring(r.content)
+        self.assertTrue(soup.xpath('//header//*[@id="expert-toggle"]'));self.assertTrue(soup.xpath('//header//*[@data-theme-toggle]'))
+        self.assertFalse(soup.xpath('//footer//*[@id="expert-toggle"]'))
+    def test_expert_frame_navigation_keeps_single_monitor(self):
+        for url in ['/normcontol/','/normcontol/batches/new/','/normcontol/reports/']:
+            r=self.client.get(url,HTTP_SEC_FETCH_DEST='iframe')
+            self.assertEqual(r.status_code,200)
+            self.assertContains(r,'class="embedded" data-embedded="1"')
+            self.assertTemplateNotUsed(r,'chat.html')
+
+    def test_empty_prompt_uses_example_in_chat_and_expert(self):
+        from .intake import DEFAULT_REVIEW_PROMPT,UploadForm
+        from knowledge.launch import NewLaunchForm
+        for klass,kwargs in [(UploadForm,{}),(NewLaunchForm,{'user':self.user})]:
+            for blank in ['', '   ']:
+                form=klass({'user_prompt':blank,'checks':['language'],'launch_key':str(uuid.uuid4())},**kwargs)
+                self.assertTrue(form.is_valid(),form.errors)
+                self.assertEqual(form.cleaned_data['user_prompt'],DEFAULT_REVIEW_PROMPT)
+        result=self.post(text='   ')
+        self.assertEqual(result.status_code,200,result.content)
+        self.assertEqual(self.c.messages.get(key=self.key).text,DEFAULT_REVIEW_PROMPT)
+        self.assertContains(self.client.get('/normcontol/'),DEFAULT_REVIEW_PROMPT)
+
+    def test_logout_topbar_action_in_both_presentations(self):
+        from lxml import html
+        for mode in ['chat','expert']:
+            self.client.force_login(self.user)
+            AccessProfile.objects.update_or_create(user=self.user,defaults={'presentation':mode})
+            response=self.client.get('/normcontol/chat/')
+            page=html.fromstring(response.content)
+            action=page.xpath('//header//form[.//button[@aria-label="Выйти"]]/@action')[0]
+            self.assertEqual(self.client.post(action).status_code,302)
+            self.assertNotIn('_auth_user_id',self.client.session)
+
     def test_full_interface_remains_available(self):
         self.assertTemplateUsed(self.client.get('/normcontol/?presentation=expert'),'dashboard.html')
     def test_expert_new_check_has_prompt_and_saves_same_run_conversation(self):
@@ -103,6 +141,30 @@ class ChatTests(TestCase):
     def test_running_no_file_or_false_ready(self):
         self.post();r=self.client.get(self.url).json();self.assertFalse(r['state']['terminal']);self.assertEqual(r['state']['exports'],[])
         self.assertEqual(self.client.get(self.url+'export/xlsx/').status_code,409)
+    def test_clock_survives_page_reload_and_stops_for_terminal_review(self):
+        now=timezone.now();started=(now-timedelta(seconds=214)).timestamp()
+        b=Batch.objects.create(owner=self.user,name='Счётчик',checks=['logic'],status='running');self.c.batch=b;self.c.save()
+        run=WorkerRun.objects.create(batch=b,state='running',snapshot={'created':started,'updated':now.timestamp()},report={})
+        with patch('portal.chat.timezone.now',return_value=now):
+            a=self.client.get(self.url).json()['state']['clock'];page=self.client.get('/normcontol/chat/?conversation='+str(self.c.pk))
+        self.assertEqual(a['seconds'],214);self.assertTrue(a['live']);self.assertEqual(a['label'],'Работает уже')
+        self.assertEqual(page.context['initial']['conversation']['state']['clock'],a)
+        b.status='failed';b.save();run.state='partial';run.save();WorkerRun.objects.filter(pk=run.pk).update(heartbeat=now)
+        with patch('portal.chat.timezone.now',return_value=now+timedelta(hours=2)):
+            final=self.client.get(self.url).json()['state']['clock']
+        self.assertFalse(final['live']);self.assertEqual(final['seconds'],214)
+    def test_queue_clock_does_not_claim_processing_and_pause_does_not_tick(self):
+        from .chat import review_clock
+        from types import SimpleNamespace
+        now=timezone.now();b=Batch.objects.create(owner=self.user,name='Очередь',status='waiting')
+        b.created=now-timedelta(seconds=30)
+        with patch('portal.chat.timezone.now',return_value=now):
+            value=review_clock(b,None)
+        self.assertEqual(value['label'],'В очереди уже');self.assertEqual(value['seconds'],30)
+        b.status='paused';run=SimpleNamespace(snapshot={'created':(now-timedelta(seconds=100)).timestamp(),'updated':now.timestamp()},report={},heartbeat=now)
+        with patch('portal.chat.timezone.now',return_value=now+timedelta(hours=1)):
+            value=review_clock(b,run)
+        self.assertFalse(value['live']);self.assertEqual(value['seconds'],100)
     def test_full_excel_ignores_pagination_filters(self):
         b=Batch.objects.create(owner=self.user,name='Полный',checks=['logic'],status='completed');self.c.batch=b;self.c.save()
         fs=[{'id':str(i),'status':'confirmed','issue':'Замечание '+str(i),'evidence':[],'suggestion':''} for i in range(105)]

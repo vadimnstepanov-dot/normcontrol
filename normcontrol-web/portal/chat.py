@@ -2,7 +2,8 @@
 
 No model inference, user supplied paths, command names or remote URLs here.
 """
-import json,re,uuid
+import json,re,uuid,math
+from datetime import datetime,timezone as dt_timezone
 from functools import wraps
 from collections import Counter
 from types import SimpleNamespace
@@ -14,9 +15,10 @@ from django.http import JsonResponse,HttpResponse
 from django.shortcuts import get_object_or_404,render,redirect
 from django.urls import reverse
 from django.views.decorators.http import require_POST
+from django.utils import timezone
 from .models import AccessProfile,Batch,Conversation,ChatMessage,WorkerRun,WordReviewExport
 from .access import visible_batch,can_edit
-from .intake import UploadForm,launch_uploaded,form_context
+from .intake import UploadForm,launch_uploaded,form_context,DEFAULT_REVIEW_PROMPT,review_prompt
 from .forms import CHECKS
 
 MAX_TEXT=6000
@@ -53,6 +55,42 @@ def intent(text):
         if re.search(pattern,value):explicit.append(key)
     return explicit or ['sto','logic','language']
 
+def review_clock(batch,run):
+    """Wall time, independent of browser lifetime; never imply GPU activity."""
+    now=timezone.now().timestamp()
+    def stamp(value):
+        try:
+            if isinstance(value,datetime):return value.timestamp()
+            if isinstance(value,str):
+                parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+                if parsed.tzinfo is None:parsed=parsed.replace(tzinfo=dt_timezone.utc)
+                return parsed.timestamp()
+            if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>0:return float(value)
+        except (ValueError,TypeError,OverflowError):pass
+        return None
+    starts=[];ends=[]
+    if run:
+        for data in (run.snapshot,run.report):
+            if not isinstance(data,dict):continue
+            if value:=stamp(data.get('created')):starts.append(value)
+            if value:=stamp(data.get('updated')):ends.append(value)
+        if value:=stamp(run.heartbeat):ends.append(value)
+    if settings.KNOWLEDGE_V2_ENABLED:
+        for job in batch.knowledge_checks.all():
+            if value:=stamp(job.progress.get('updated_at')):ends.append(value)
+    queued=batch.status=='waiting'
+    live=batch.status in ('waiting','preparing','running')
+    started=min(starts) if starts else batch.created.timestamp()
+    if queued:started=batch.created.timestamp()
+    # Older jobs have no package-finished timestamp. Show the last recorded
+    # update explicitly rather than inventing an end time when polling resumes.
+    end=now if live else min(now,max(ends)) if ends else None
+    elapsed=max(0,(end if end is not None else started)-started)
+    label=('В очереди уже' if queued else 'Работает уже' if live and starts else 'С момента запуска' if live else
+           'Приостановлено; прошло' if batch.status=='paused' else 'До последнего обновления')
+    return {'seconds':int(elapsed),'live':live,'label':label,'started_at':started,
+            'known':live or bool(ends),'note':'Время с начала обработки, включая паузы и ожидание этапов.' if starts else 'Время с момента отправки проверки.'}
+
 def compact(user,conversation):
     batch=conversation.batch
     if not batch:return None
@@ -83,7 +121,7 @@ def compact(user,conversation):
     exports=[{'id':str(x.pk),'state':x.state,'error':x.error,'url':reverse('word-review-file',kwargs={'pk':batch.pk,'export_id':x.pk}) if x.state=='ready' else None}
         for x in WordReviewExport.objects.filter(batch=batch).order_by('-created')[:3]]
     return {'batch':str(batch.pk),'state':batch.status,'text':text,'version':version,'complete':complete,'terminal':terminal,
-            'actions':actions,'progress':progress,'exports':exports,
+            'actions':actions,'progress':progress,'clock':review_clock(batch,run),'exports':exports,
             'documents':[{'id':d.pk,'name':d.name,'role':d.review_role} for d in batch.documents.order_by('id')],
             'checks':batch.checks,'expert_url':reverse('dashboard')+'?presentation=expert&batch='+str(batch.pk)+'#current-review'}
 
@@ -109,7 +147,7 @@ def page(request):
     initial={'conversation':serialize(request.user,selected) if selected else None,'choices':choices(request.user),
              'presentation':getattr(request,'chat_presentation',None) or request.GET.get('presentation') or profile.presentation,'theme':profile.theme,
              'expert_url':getattr(request,'chat_expert_url','')}
-    return render(request,'chat.html',{'initial':initial,'profile':profile})
+    return render(request,'chat.html',{'initial':initial,'profile':profile,'default_review_prompt':DEFAULT_REVIEW_PROMPT})
 
 @login_required
 @require_POST
@@ -161,8 +199,8 @@ def conversation(request,cid):
 @require_POST
 @checked_input
 def send(request,cid):
-    c=owned(request.user,cid);text=request.POST.get('text','').strip()
-    if not text or len(text)>MAX_TEXT:return JsonResponse({'error':'Введите запрос до 6000 символов.'},status=422)
+    c=owned(request.user,cid);text=review_prompt(request.POST.get('text',''))
+    if len(text)>MAX_TEXT:return JsonResponse({'error':'Введите запрос до 6000 символов.'},status=422)
     try:key=uuid.UUID(request.POST.get('key',''))
     except ValueError:return JsonResponse({'error':'Нужен идентификатор сообщения'},status=400)
     with transaction.atomic():
@@ -194,7 +232,7 @@ def send(request,cid):
         if 'sto' in checks and not sets:
             if len(selected['norms'])==1:sets=[selected['norms'][0]['id']]
             else:return clarify('Выберите нормативную базу.' if selected['norms'] else 'Проверка по СТО недоступна: опубликованной базы нет. Выберите доступные направления.')
-        data={'name':text[:160],'checks':checks,'normative_sets':sets,'experience':config.get('experience',''),'launch_key':str(key)}
+        data={'name':text[:160],'user_prompt':text,'checks':checks,'normative_sets':sets,'experience':config.get('experience',''),'launch_key':str(key)}
         form=launch_form(request.user,data)
         if not form.is_valid():return JsonResponse({'error':'; '.join(str(e) for errors in form.errors.values() for e in errors)},status=422)
         cleaned=dict(form.cleaned_data,document_roles=roles)

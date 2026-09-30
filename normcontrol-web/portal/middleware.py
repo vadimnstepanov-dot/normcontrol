@@ -22,7 +22,11 @@ class HeadersMiddleware:
 class PresentationMiddleware:
     """Keep deep HTML links in the persistent shell; API/export rights stay intact."""
     def __init__(self,get_response):self.get_response=get_response
-    def __call__(self,request):return self.get_response(request)
+    def __call__(self,request):
+        # The expert frame stays embedded after ordinary links and form redirects.
+        if request.headers.get('Sec-Fetch-Dest')=='iframe':
+            query=request.GET.copy();query['embedded']='1';request.GET=query
+        return self.get_response(request)
     def process_view(self,request,view,args,kwargs):
         if request.method!='GET' or not request.user.is_authenticated or request.headers.get('Sec-Fetch-Dest')!='document':return None
         if request.GET.get('format') or request.GET.get('embedded')=='1':return None

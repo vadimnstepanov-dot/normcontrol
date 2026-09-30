@@ -4,17 +4,31 @@
   const $=id=>document.getElementById(id), uid=document.documentElement.dataset.uiUser;
   const token=document.querySelector('[name=csrfmiddlewaretoken]').value;
   let current=initial.conversation, config={}, files=[], sending=false, key=crypto.randomUUID(), conversationKey=crypto.randomUUID(), timer, draftTimer;
-  let expert=false, rendered='', frameBatch='', lastFocus=null;
+  let expert=false, rendered='', frameBatch='', lastFocus=null, refreshing=false;
+  let preferenceTimer,preferenceBusy=false,pendingPreferences={};
+  let historyLoading=false,historyLoaded=false;
+  let clockNode=null,clockValue=null,clockReceived=0;
   const prefs=$('expert-toggle'), frame=$('expert-frame');
   async function api(path,method='GET',body=null){
-    const options={method,headers:{'X-CSRFToken':token},credentials:'same-origin'};
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),method==='GET'?15000:60000);
+    const options={method,headers:{'X-CSRFToken':token},credentials:'same-origin',signal:controller.signal};
     if(body instanceof FormData)options.body=body;
     else if(body!==null){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
-    const response=await fetch(base+path,options);
+    let response;try{response=await fetch(base+path,options);}catch(error){if(error.name==='AbortError')throw Error('Сервер не ответил вовремя. Проверьте связь.');throw error;}finally{clearTimeout(timeout);}
     if(response.redirected&&response.url.includes('/login/'))throw Object.assign(Error('Сессия завершена. Войдите снова.'),{status:401});
     const data=await response.json().catch(()=>({error:'Сервер не подтвердил доступ. Проверьте сеанс входа.'}));
     if(!response.ok)throw Object.assign(Error(data.error||data.clarification||'Запрос не принят'),{data,status:response.status});
     return data;
+  }
+  function savePreferences(value){
+    Object.assign(pendingPreferences,value);clearTimeout(preferenceTimer);
+    preferenceTimer=setTimeout(flushPreferences,250);
+  }
+  async function flushPreferences(){
+    if(preferenceBusy||!Object.keys(pendingPreferences).length)return;
+    preferenceBusy=true;const value=pendingPreferences;pendingPreferences={};
+    try{await api('preferences/','POST',value);}catch(error){notify('Настройки применены в этом окне. '+error.message);}
+    finally{preferenceBusy=false;if(Object.keys(pendingPreferences).length)flushPreferences();}
   }
   function node(tag,text,cls){const n=document.createElement(tag);if(text)n.textContent=text;if(cls)n.className=cls;return n;}
   function notify(text){$('connection').textContent=text;}
@@ -37,6 +51,7 @@
       select.value=config.roles[i]||'';select.addEventListener('change',()=>{config.roles[i]=select.value;saveDraft();});
       const remove=node('button','×');remove.type='button';remove.setAttribute('aria-label','Убрать '+f.name);remove.onclick=()=>{files.splice(i,1);config.roles.splice(i,1);attachmentList();saveDraft();};
       row.append(name,select,remove);$('attachments').append(row);});
+    $('doc-review-warning').hidden=!files.some(f=>/\.doc$/i.test(f.name));
   }
   function conditions(){
     $('conditions').replaceChildren();
@@ -46,13 +61,25 @@
     initial.choices.norms.forEach(n=>{const option=node('option',n.name);option.value=n.id;option.selected=config.normative_sets.includes(n.id);norms.append(option);});
     norms.onchange=()=>{config.normative_sets=[...norms.selectedOptions].map(x=>x.value).filter(Boolean);saveDraft();};$('conditions').append(norms);
   }
+  function duration(seconds){
+    const total=Math.max(0,Math.floor(seconds)),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),rest=total%60;
+    return (hours?hours+' ч ':'')+(minutes||hours?minutes+' мин ':'')+rest+' с';
+  }
+  function updateClock(){
+    if(!clockNode||!clockValue)return;
+    const seconds=clockValue.seconds+(clockValue.live?(performance.now()-clockReceived)/1000:0);
+    clockNode.textContent=clockValue.label+' '+duration(seconds);
+  }
   function render(){
-    const data=current;const signature=JSON.stringify(data?{messages:data.messages,state:data.state}:null);if(signature===rendered)return;rendered=signature;
+    const data=current;clockValue=data?.state?.clock;clockReceived=performance.now();
+    // Polling clock samples must not rebuild messages or steal control focus.
+    const signature=JSON.stringify(data?{messages:data.messages,state:{...data.state,clock:null}}:null);if(signature===rendered){updateClock();return;}rendered=signature;clockNode=null;
     const main=$('chat-main'),nearBottom=main.scrollHeight-main.scrollTop-main.clientHeight<80,position=main.scrollTop;
-    $('empty').hidden=!!data?.messages?.length;$('messages').replaceChildren();
-    for(const m of data?.messages||[]){const row=node('article',null,'message '+m.role);row.append(node('span',m.role==='user'?'Вы':'NormControl','message-label'),node('div',m.text));
+    document.body.classList.toggle('chat-empty',!data?.messages?.length);$('empty').hidden=!!data?.messages?.length;$('messages').replaceChildren();
+    for(const m of data?.messages||[]){const row=node('article',null,'message '+m.role),label=node('div',null,'message-label');label.append(node('span',m.role==='user'?'Вы':'NormControl'));row.append(label,node('div',m.text));
       for(const doc of m.metadata.documents||[])row.append(node('div',doc.name+' · '+(doc.role==='approved_reference'?'Как основание':'Проверить'),'doc-name'));
       if(m.metadata.kind==='progress'&&data.state){const state=data.state;
+        if(state.clock?.known){clockNode=node('span',null,'chat-elapsed');clockNode.setAttribute('aria-live','off');clockNode.title=state.clock.note;label.append(clockNode);updateClock();}
         if(state.progress)row.append(node('div','Выполнено задач: '+state.progress.completed+' из '+state.progress.total+'. План может уточняться.','progress'));
         const controls=node('div',null,'actions');const labels={pause:'Приостановить',resume:'Продолжить',cancel:'Отменить',rerun:'Повторить'};
         for(const action of state.actions){const b=node('button',labels[action]);b.onclick=async()=>{b.disabled=true;try{const c=await api('conversations/'+data.id+'/control/','POST',{action});if(c.id!==current.id)open(c);else{current=c;render();}}catch(e){notify(e.message);}finally{b.disabled=false;}};controls.append(b);}row.append(controls);
@@ -66,36 +93,53 @@
   }
   function updateURL(push=false){const url=new URL(location.href);url.pathname=base;url.search='';if(current)url.searchParams.set('conversation',current.id);history[push?'pushState':'replaceState']({},'',url);}
   function open(c,navigate=true){current=c;files=[];$('documents').value='';key=crypto.randomUUID();rendered='';restoreDraft();attachmentList();conditions();render();if(navigate)updateURL(true);if(expert)loadExpert();}
-  async function refresh(){if(!current)return;try{const data=await api('conversations/'+current.id+'/');if(data.id!==current?.id)return;current=data;render();notify('');}catch(e){if([401,403,404].includes(e.status)){current=null;files=[];frame.removeAttribute('src');$('expert-pane').hidden=true;$('chat-main').hidden=false;attachmentList();render();}notify(e.message);}}
+  async function refresh(){if(!current||refreshing)return;refreshing=true;const cid=current.id;
+    try{const data=await api('conversations/'+cid+'/');if(cid!==current?.id)return;current=data;render();}
+    catch(e){if(cid!==current?.id)return;if([401,403,404].includes(e.status)){current=null;files=[];frame.removeAttribute('src');setExpert(false,false);attachmentList();render();}notify(e.message);}
+    finally{refreshing=false;}
+  }
   function loadExpert(){const batch=current?.batch||'';
-    if(!batch&&!config.checks.length){const text=$('message').value.toLowerCase();const patterns={sto:/сто|норматив/,logic:/логик/,language:/граммат|грамот|язык|терминолог|орфограф/,formatting:/оформлен/};config.checks=Object.keys(patterns).filter(k=>patterns[k].test(text));}
+    if(!batch&&!config.checks.length){const text=($('message').value.trim()||$('message').placeholder).toLowerCase();const patterns={sto:/сто|норматив/,logic:/логик/,language:/граммат|грамот|язык|терминолог|орфограф/,formatting:/оформлен/};config.checks=Object.keys(patterns).filter(k=>patterns[k].test(text));}
     if(!frame.getAttribute('src')||frameBatch!==batch){frameBatch=batch;frame.src=initial.expert_url||current?.state?.expert_url||'/normcontol/batches/new/?presentation=expert&embedded=1';initial.expert_url='';}
   }
-  async function setExpert(value,save=true){
+  function setExpert(value,save=true){
     if(!value&&expert&&!current?.batch){try{const doc=frame.contentDocument,form=doc?.getElementById('launch-form');if(form){const input=doc.getElementById('documents');if(input?.files.length)files=[...input.files];$('message').value=form.elements.namedItem('user_prompt')?.value||$('message').value;config.checks=[...form.querySelectorAll('[name=checks]:checked')].map(x=>x.value);config.normative_sets=[...form.querySelectorAll('[name=normative_sets]:checked')].map(x=>x.value);config.experience=form.elements.namedItem('experience')?.value||'';config.roles=JSON.parse(form.elements.namedItem('document_roles')?.value||'[]');attachmentList();conditions();saveDraft();}}catch(e){notify('Не удалось прочитать параметры полного интерфейса');}}
     lastFocus=document.activeElement;expert=value;$('chat-main').hidden=value;$('composer-pane').hidden=value;$('expert-pane').hidden=!value;
+    $('bottom').hidden=value;setSidebar(false);$('chat-sidebar-toggle').hidden=value;
     prefs.setAttribute('aria-checked',String(value));$('expert-state').textContent=value?'вкл.':'выкл.';
     if(value)loadExpert();prefs.focus();
-    if(save){try{await api('preferences/','POST',{presentation:value?'expert':'chat'});localStorage.setItem('normcontrol-presentation:'+uid,value?'expert':'chat');}catch(e){notify('Режим изменён в этом окне. '+e.message);}}
-    if(!value&&current)await refresh();
+    if(save){try{localStorage.setItem('normcontrol-presentation:'+uid,value?'expert':'chat');}catch(e){}savePreferences({presentation:value?'expert':'chat'});}
+
   }
+  new ResizeObserver(()=>{$('chat-sidebar').style.top=document.querySelector('.chat-topbar').getBoundingClientRect().height+'px';}).observe(document.querySelector('.chat-topbar'));
+  function setSidebar(open){$('chat-sidebar').hidden=!open;document.body.classList.toggle('chat-sidebar-open',open);const button=$('chat-sidebar-toggle');button.setAttribute('aria-expanded',String(open));button.setAttribute('aria-label',open?'Свернуть системную панель':'Развернуть системную панель');button.title=button.getAttribute('aria-label');}
+  $('chat-sidebar-toggle').onclick=()=>{if(expert){try{frame.contentDocument.getElementById('brand-sidebar-toggle')?.click();}catch(e){notify('Панель ещё загружается');}}else setSidebar($('chat-sidebar').hidden);};
+  $('brand-sidebar-toggle').onclick=()=>setSidebar(false);
   prefs.onclick=()=>setExpert(!expert);
   $('attach').onclick=()=>$('documents').click();
   function attach(incoming){if(sending)return;for(const f of incoming){if(!/\.docx?$/i.test(f.name)||f.size>50*1024**2){notify('Word .doc/.docx, до 50 МБ на документ.');continue;}if(files.length>=20||files.reduce((n,x)=>n+x.size,0)+f.size>100*1024**2){notify('До 20 документов, общий размер до 100 МБ.');break;}files.push(f);config.roles.push('');}attachmentList();}
   $('documents').onchange=e=>attach([...e.target.files]);
   $('chat-main').ondragover=e=>e.preventDefault();$('chat-main').ondrop=e=>{e.preventDefault();attach([...e.dataTransfer.files]);};
   $('message').oninput=saveDraft;
-  $('composer').onsubmit=async e=>{e.preventDefault();if(sending||!$('message').value.trim())return;sending=true;$('send').disabled=true;notify('Передача запроса…');
+  $('composer').onsubmit=async e=>{e.preventDefault();if(sending)return;sending=true;$('send').disabled=true;notify('Передача запроса…');
     try{if(!current){current=await api('conversations/','POST',{key:conversationKey});updateURL();}
-      const form=new FormData();form.append('text',$('message').value);form.append('key',key);form.append('config',JSON.stringify(config));for(const f of files)form.append('documents',f);
+      const form=new FormData();form.append('text',$('message').value.trim()||$('message').placeholder);form.append('key',key);form.append('config',JSON.stringify(config));for(const f of files)form.append('documents',f);
       current=await api('conversations/'+current.id+'/send/','POST',form);
       try{localStorage.removeItem(cacheKey());localStorage.removeItem('normcontrol-chat-draft:'+uid+':new');}catch(e){}
       files=[];$('documents').value='';$('message').value='';config={checks:[],normative_sets:[],roles:[]};key=crypto.randomUUID();attachmentList();$('conditions').hidden=true;render();notify('');
     }catch(e){notify(e.message);if(e.data?.clarification){if(e.data.conversation){current=e.data.conversation;render();} $('conditions').hidden=false;conditions();}}finally{sending=false;$('send').disabled=false;}
   };
-  $('new-chat').onclick=async()=>{if(sending){notify('Дождитесь передачи запроса');return;}saveDraft();try{open(await api('conversations/','POST',{}));}catch(e){notify(e.message);}};
-  $('history-toggle').onclick=async()=>{try{const data=await api('conversations/');$('history-items').replaceChildren();for(const item of data.items){const b=node('button',item.title);b.append(node('small',item.state));b.onclick=async()=>{if(sending)return;saveDraft();try{open(item.id?await api('conversations/'+item.id+'/'):await api('conversations/','POST',{batch:item.batch}));$('history').hidden=true;}catch(e){notify(e.message);}};$('history-items').append(b);}$('history').hidden=!$('history').hidden;$('history-toggle').setAttribute('aria-expanded',String(!$('history').hidden));}catch(e){notify(e.message);}};
-  $('history-close').onclick=()=>{$('history').hidden=true;$('history-toggle').setAttribute('aria-expanded','false');$('history-toggle').focus();};
+  $('new-chat').onclick=async()=>{if(sending){notify('Дождитесь передачи запроса');return;}saveDraft();try{const next=await api('conversations/','POST',{});frame.removeAttribute('src');frameBatch='';initial.expert_url='';open(next);}catch(e){notify(e.message);}};
+  function showHistory(open){$('history').hidden=!open;$('history-toggle').setAttribute('aria-expanded',String(open));}
+  async function loadHistory(){
+    if(historyLoading)return;historyLoading=true;
+    if(!historyLoaded)$('history-items').replaceChildren(node('p','Загружаем историю…'));
+    try{const data=await api('conversations/');$('history-items').replaceChildren();for(const item of data.items){
+      const b=node('button',item.title);b.append(node('small',item.state));b.onclick=async()=>{if(sending)return;saveDraft();showHistory(false);try{open(item.id?await api('conversations/'+item.id+'/'):await api('conversations/','POST',{batch:item.batch}));}catch(e){notify(e.message);}};$('history-items').append(b);
+    }historyLoaded=true;}catch(e){if(!historyLoaded)$('history-items').replaceChildren(node('p',e.message));notify(e.message);}finally{historyLoading=false;}
+  }
+  $('history-toggle').onclick=()=>{const open=$('history').hidden;showHistory(open);if(open)loadHistory();};
+  $('history-close').onclick=()=>{showHistory(false);$('history-toggle').focus();};
   window.addEventListener('online',refresh);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
   window.addEventListener('popstate',()=>{const cid=new URL(location.href).searchParams.get('conversation');if(cid)api('conversations/'+cid+'/').then(c=>open(c,false)).catch(e=>notify(e.message));else open(null,false);});
   // Same-origin expert navigation shares context, without touching either DOM's draft.
@@ -118,7 +162,9 @@
       if(config.normative_sets.length)[...form.querySelectorAll('[name=normative_sets]')].forEach(x=>x.checked=config.normative_sets.includes(x.value));
       form.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));}
   }catch(e){notify('Полный интерфейс требует действующей сессии');} });
-  window.addEventListener('normcontrol-theme',e=>api('preferences/','POST',{theme:e.detail}).catch(error=>notify('Тема сохранена только в браузере. '+error.message)));
+  window.addEventListener('normcontrol-theme',e=>savePreferences({theme:e.detail}));
   restoreDraft();attachmentList();conditions();render();setExpert(initial.presentation==='expert',false);
   timer=setInterval(()=>{if(!document.hidden&&!sending)refresh();},7000);
+  setInterval(()=>{if(!document.hidden)updateClock();},1000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){updateClock();refresh();}});
 })();

@@ -16,3 +16,7 @@ body:has(#launch-form) .theme-toggle{bottom:8px}
 @media(max-width:950px){.launch-grid{grid-template-columns:1fr}.launch-summary{position:static}.launch-checks>div{grid-template-columns:repeat(2,minmax(0,1fr))}.launch-badge{display:none}}
 @media(max-width:540px){.launch-checks>div{grid-template-columns:1fr}.launch-section,.launch-summary{padding:18px}.launch-dropzone{min-height:164px}.launch-summary .button{min-height:54px}}
 @media(prefers-reduced-motion:reduce){.launch-summary .button{transition:none}}
+
+.prompt-input{position:relative}.prompt-input textarea{padding-left:54px;width:100%}.prompt-input #prompt-attach{position:absolute;left:10px;top:12px;width:34px;height:34px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--text);font-size:25px;line-height:1;cursor:pointer}.prompt-input #prompt-attach:hover{background:var(--surface)}
+
+.prompt-input #prompt-attach{font-size:32px;font-weight:800}

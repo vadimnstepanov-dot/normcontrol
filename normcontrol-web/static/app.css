@@ -111,3 +111,5 @@
   .users-panel .member-row .member-actions{grid-column:1/-1;width:100%;padding-top:10px;border-top:1px solid var(--line)}
   .users-panel .permission-toggle{min-height:38px}
 }
+
+body.embedded .topbar,body.embedded .workspace>footer,body.embedded>.theme-toggle{display:none!important}

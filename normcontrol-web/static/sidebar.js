@@ -1,7 +1,8 @@
 (() => {
  'use strict';
  const root=document.documentElement,key='normcontrol-sidebar-'+(root.dataset.uiUser||'anonymous');
- try{root.dataset.sidebar=localStorage.getItem(key)==='collapsed'?'collapsed':'expanded';}catch(_){root.dataset.sidebar='expanded';}
+ if(new URL(location.href).searchParams.get('embedded')==='1')root.dataset.sidebar='expanded';
+ else try{root.dataset.sidebar=localStorage.getItem(key)==='collapsed'?'collapsed':'expanded';}catch(_){root.dataset.sidebar='expanded';}
  document.addEventListener('DOMContentLoaded',()=>{
   const button=document.getElementById('system-sidebar-toggle'),panel=document.getElementById('system-sidebar');
   if(!button||!panel)return;
