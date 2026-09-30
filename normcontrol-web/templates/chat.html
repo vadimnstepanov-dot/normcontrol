@@ -1,0 +1,14 @@
+{% load static %}<!doctype html>
+<html lang="ru" data-ui-user="{{ request.user.pk }}" data-saved-theme="{{ profile.theme }}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
+<title>NormControl · Чат</title><link rel="icon" href="{% static 'favicon.svg' %}">
+<link rel="stylesheet" href="{% static 'chat.css' %}?v=094-final1"><script src="{% static 'theme.js' %}?v=094-final1"></script><script defer src="{% static 'chat.js' %}?v=094-final1"></script></head>
+<body><a class="skip" href="#composer">К сообщению</a>
+<header><a class="brand" href="{% url 'chat' %}">◈ <strong>NormControl</strong></a><nav aria-label="Переписки"><button id="history-toggle" aria-label="История проверок" aria-expanded="false">◷</button><button id="new-chat" aria-label="Новая проверка">＋</button><form action="{% url 'logout' %}" method="post">{% csrf_token %}<button aria-label="Выйти">↗</button></form></nav></header>
+<aside id="history" hidden aria-label="История проверок"><h2>Проверки</h2><div id="history-items"></div><button id="history-close">Закрыть</button></aside>
+<main id="chat-main"><div id="empty"><h1>Что проверим?</h1><p>Прикрепите документ и напишите задачу.</p></div><div id="messages" aria-live="polite" aria-relevant="additions text"></div></main>
+<section id="expert-pane" hidden aria-label="Полный интерфейс"><iframe id="expert-frame" title="Полный интерфейс NormControl"></iframe></section>
+<footer id="bottom"><section id="composer-pane"><div id="attachments"></div><div id="conditions" hidden></div><form id="composer">{% csrf_token %}
+<input id="documents" type="file" accept=".doc,.docx" multiple hidden><button id="attach" type="button" aria-label="Прикрепить документы">⌕</button><textarea id="message" rows="2" maxlength="6000" aria-label="Задача проверки" placeholder="Напишите, что нужно проверить…"></textarea><button id="send" type="submit" aria-label="Отправить запрос">↑</button></form></section>
+<div class="preferences"><button id="expert-toggle" type="button" role="switch" aria-checked="false"><span aria-hidden="true">⚙</span> Эксперт <span id="expert-state">выкл.</span></button><button type="button" data-theme-toggle aria-label="Переключить тему"><span class="theme-toggle-icon" aria-hidden="true">☀</span><span class="theme-toggle-label visually-hidden">Светлая</span></button><span id="connection" role="status"></span></div></footer>
+{{ initial|json_script:'chat-initial' }}</body></html>

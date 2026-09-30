@@ -112,7 +112,7 @@ class Bridge:
         capabilities.append('normative.search')
         from .model_profile import enabled as profile_control
         # A v5 worker must never resume a v4 model/transport snapshot.
-        features=['context-budget-v5','check-log-v1','pipeline-v1']
+        features=['context-budget-v5','check-log-v1','pipeline-v1','document-roles-v1']
         if profile_control():features.append('visual-tail-v1')
         claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,'features':features})['command']
         if claim is None:return False

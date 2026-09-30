@@ -2,15 +2,26 @@ from django.urls import path,include
 from django.http import HttpResponse
 from . import views as v
 from . import worker_api as w
+from . import review_export_views as wr
+from . import chat
+chat_routes=[path('chat/',chat.page,name='chat'),path('chat/preferences/',chat.preference,name='chat-preferences'),
+path('chat/conversations/',chat.conversations,name='chat-conversations'),path('chat/conversations/<uuid:cid>/',chat.conversation,name='chat-conversation'),
+path('chat/conversations/<uuid:cid>/send/',chat.send,name='chat-send'),path('chat/conversations/<uuid:cid>/control/',chat.control,name='chat-control'),
+path('chat/conversations/<uuid:cid>/export/<str:kind>/',chat.export,name='chat-export')]
 routes=[path('',v.dashboard,name='dashboard'),path('login/',v.sign_in,name='login'),path('register/',v.self_register,name='register'),path('logout/',v.sign_out,name='logout'),
 path('batches/new/',v.new_batch,name='new'),path('batches/<uuid:pk>/',v.detail,name='batch'),path('batches/<uuid:pk>/action/',v.batch_action,name='batch-action'),path('batches/<uuid:pk>/documents/add/',v.add_documents,name='batch-add-documents'),path('documents/<int:pk>/download/',v.download,name='download'),
 path('reports/',v.reports,name='reports'),path('rag/',v.rag,name='rag'),path('settings/llm/',v.llm,name='llm'),path('settings/queue/',v.queue,name='queue'),path('settings/queue/<uuid:pk>/action/',v.queue_action,name='queue-action'),path('settings/users/',v.users,name='users'),path('settings/users/<int:pk>/toggle/',v.toggle_user,name='toggle-user'),path('settings/users/<int:pk>/password/',v.reset_user,name='reset-user'),path('settings/audit/',v.audit_log,name='audit'),path('account/password/',v.password,name='password'),path('health/',v.health)]
 routes += [path('worker/claim/',w.claim),path('worker/<uuid:lease>/files/<int:pk>/',w.file),path('worker/<uuid:lease>/update/',w.update),path('worker/<uuid:lease>/feedback/<int:pk>/',w.feedback_result),path('batches/<uuid:pk>/status/',w.status,name='batch-status'),path('batches/<uuid:pk>/report/',w.report,name='batch-report'),path('batches/<uuid:pk>/feedback/',w.feedback,name='batch-feedback')]
+routes+=chat_routes
 routes.append(path('batches/<uuid:pk>/register/',w.register,name='batch-register'))
 routes.append(path('worker/<uuid:lease>/log/',w.check_log_receive))
 routes.append(path('batches/<uuid:pk>/log.xlsx',w.check_log_download,name='batch-check-log'))
 routes.append(path('batches/<uuid:pk>/wake/',w.wake,name='batch-wake'))
 routes.append(path('batches/<uuid:pk>/findings/<str:finding_id>/disposition/',w.disposition,name='finding-disposition'))
+routes += [path('batches/<uuid:pk>/word-review/',wr.workspace,name='word-review'),
+path('worker/<uuid:lease>/review-source/<int:document_id>/',w.review_source),
+path('batches/<uuid:pk>/word-review/<uuid:export_id>/file/',wr.artifact,name='word-review-file'),
+path('batches/<uuid:pk>/word-review/<uuid:export_id>/application.json',wr.application_report,name='word-review-application')]
 routes.append(path('worker/feedback/',w.pending_feedback))
 routes.extend([path('worker/config/',w.configuration),path('settings/llm/probe/',v.llm_probe,name='llm-probe')])
 routes.append(path('worker/ping/',w.ping))

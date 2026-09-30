@@ -48,6 +48,16 @@ class ReviewTests(unittest.TestCase):
     def add(self, kind, rid, payload): self.store.put_record('set',kind,rid,1,payload)
     def create(self): return self.runner.create([self.path],{self.did:{'release':['profile']}},self.facts,lambda *args:True)
 
+    def test_approved_reference_supplies_package_context_but_has_no_normative_rows(self):
+        reference=Path(self.tmp.name)/'reference.docx';docx(reference,'Утверждённая система хранит журнал 30 дней.')
+        docs=corpus([self.path,reference]);docs[1]['review_role']='approved_reference'
+        profiles={d['id']:{'release':['profile']} for d in docs}
+        facts={d['id']:{'type':{'value':'test','evidence':[{'source':d['id'],'locator':'p1'}]}} for d in docs}
+        task=self.runner.create([self.path,reference],profiles,facts,lambda *args:True,prepared_docs=docs)
+        with self.store.connection() as db:payload=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0])
+        self.assertEqual({r['document_id'] for r in payload['rows']},{self.did})
+        self.assertEqual(len(payload['documents']),2)
+
     def test_resume_reuses_pinned_plan_without_token_planning_or_cursor_reset(self):
         from unittest.mock import patch
         args=([self.path],{self.did:{'release':['profile']}},self.facts,lambda *args:True)

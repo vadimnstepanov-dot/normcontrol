@@ -7,6 +7,7 @@ from .models import Scope,NormativeSet,Snapshot,KnowledgeCheck
 @override_settings(KNOWLEDGE_V2_ENABLED=True)
 class DashboardV2Tests(TestCase):
     def setUp(self):
+        self.client.defaults['HTTP_SEC_FETCH_DEST']='iframe'
         self.user=User.objects.create_user('viewer')
         self.other=User.objects.create_user('scope-owner')
         self.batch=Batch.objects.create(owner=self.user,name='Package')

@@ -84,7 +84,7 @@ def _run(url):
                 from .model import Client
                 engine.client=Client(engine.config);engine.client.probe()
                 review_feedback(request('/worker/feedback/',{'worker':name})['feedback'])
-                claim=request('/worker/claim/',{'worker':name,'features':['check-log-v1','pipeline-v1']})
+                claim=request('/worker/claim/',{'worker':name,'features':['check-log-v1','pipeline-v1','document-roles-v1']})
                 if not claim['job']:time.sleep(5);continue
                 state={'claim':claim,'lease':claim['lease'],'sequence':0};write(state_path,state)
             if not state.get('job'):
@@ -103,6 +103,7 @@ def _run(url):
                     options={f'check_{k}':k in claim['checks'] for k in ('language','logic','sto')}
                     options['reuse_cache']=not claim.get('fresh_review',False)
                     options['logging_enabled']=claim.get('logging_enabled',False)
+                    options['document_roles']={str(Path(path).resolve()):f.get('role','unassigned') for path,f in zip(paths,claim['files'])}
                     if claim.get('pipeline_version')=='pipeline-v1':
                         options['pipeline_id']=claim['job'];options['pipeline_directions']=claim['pipeline_directions']
                     options['formatting']='xml' if 'formatting' in claim['checks'] else 'off'
@@ -121,6 +122,12 @@ def _run(url):
                 from .report import markdown
                 report=build(engine,jid);report['markdown_export']=markdown(report);payload['report']=report
             response=request(f'/worker/{state["lease"]}/update/',payload)
+            # Older portals do not have this additive endpoint; never fail the review.
+            try:
+                from .review_sources import publish
+                publish(engine,state,request)
+            except Exception as source_error:
+                print('Review working copy unavailable: '+type(source_error).__name__,flush=True)
             if state['claim'].get('logging_enabled'):
                 from .check_log import deliver
                 deliver(jid,state['claim'],request)

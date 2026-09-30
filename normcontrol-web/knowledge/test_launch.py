@@ -13,6 +13,7 @@ from . import services
 @override_settings(KNOWLEDGE_V2_ENABLED=True)
 class UnifiedLaunchTests(TestCase):
     def setUp(self):
+        self.client.defaults['HTTP_SEC_FETCH_DEST']='iframe'
         self.user=User.objects.create_user('launch-owner')
         self.scope=Scope.objects.create(owner=self.user,name='Shared norms',kind='project')
         self.rules=NormativeSet.objects.create(scope=self.scope,name='Normative base',created_by=self.user,state='ready')

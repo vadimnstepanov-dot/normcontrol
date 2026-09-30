@@ -51,7 +51,7 @@ def start(user,batch_id,set_ids,experience_set_id,key,*,workflow=None):
     job_id=uuid.uuid4();snap=create_snapshot(user,job_id,set_ids,{'engine':'review-v2.3','planner':'context-budget-v5','template':'sto-template-v1','visual':'visual-tail-v1','trace':'package-trace-9.1.6','response_schema':'review-v2','selection':'explicit'})
     job=KnowledgeCheck.objects.create(id=job_id,batch=batch,owner=user,snapshot=snap,experience_release=experience,
         progress={'completed':0,'total':None,'percent':0,'eta_seconds':None})
-    docs=list(batch.documents.order_by('id').values('id','name','size','sha256'))
+    docs=list(batch.documents.order_by('id').values('id','name','size','sha256','review_role'))
     if not docs:raise NotReady('Batch contains no documents')
     payload=dict(set_id=str(selected[0].pk),actor_id=user.pk,job_id=str(job.pk),batch_id=str(batch.pk),
         snapshot_id=str(snap.pk),snapshot=snap.data,snapshot_digest=snap.digest,

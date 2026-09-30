@@ -29,6 +29,14 @@ class EngineTests(unittest.TestCase):
         catalog=patch('nc5.catalog.DATA',self.root/'runtime');catalog.start();self.addCleanup(catalog.stop)
         d=Document();d.add_paragraph('ЧАСТНОЕ ТЕХНИЧЕСКОЕ ЗАДАНИЕ');d.add_heading('1 Сведения',1);d.add_paragraph('Сведения должна храниться.');self.path=self.root/'example.docx';d.save(self.path)
         self.e=Engine(config(),Store(self.root/'db'));self.e.client=Fake()
+    def test_reference_is_not_a_language_or_local_logic_target(self):
+        ref=self.root/'reference.docx';d=Document();d.add_paragraph('ТЕХНИЧЕСКОЕ ЗАДАНИЕ');d.add_paragraph('Сведения должна храниться.');d.save(ref)
+        options={'check_sto':False,'check_logic':False,'document_roles':{str(ref.resolve()):'approved_reference',str(self.path.resolve()):'target'}}
+        j=self.e.create([str(self.path),str(ref)],options);self.e.run(j)
+        reference_id=next(x['id'] for x in self.e.material(j) if x.get('review_role')=='approved_reference')
+        for task in self.e.store.tasks(j,'language'):
+            self.assertNotIn(reference_id,{b['document'] for b in task['payload']['blocks']})
+        self.assertTrue(self.e.store.tasks(j,'language'))
     def test_end_to_end_queue_and_verification(self):
         j=self.e.create([str(self.path)],{'check_sto':False});self.e.run(j)
         self.assertNotEqual(self.e.store.job(j)['state'],'failed');self.assertTrue(all(t['state']=='done' for t in self.e.store.tasks(j)))

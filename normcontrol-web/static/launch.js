@@ -4,6 +4,7 @@
   const button=document.getElementById('launch-submit'),readiness=document.getElementById('launch-readiness'),summary=document.getElementById('launch-error-summary');
   const scopes=JSON.parse(document.getElementById('launch-normative-scopes').textContent),experiences=JSON.parse(document.getElementById('launch-experience-scopes').textContent);
   let selected=[],submitting=false;const existing=Number(form.dataset.existingCount||0);
+  const roles=new WeakMap();const roleInput=document.createElement('input');roleInput.type='hidden';roleInput.name='document_roles';form.append(roleInput);
   const checked=name=>Array.from(form.querySelectorAll(`input[name="${name}"]:checked`));
   const messageNode=(tag,content)=>{const item=document.createElement(tag);item.textContent=content;return item;};
   const update=()=>{
@@ -27,8 +28,9 @@
   if(input){
     const render=()=>{const dt=new DataTransfer();list.replaceChildren();selected.forEach((file,index)=>{
       dt.items.add(file);const row=messageNode('div','');row.className='file-item';const sizeText=file.size<1024*1024?`${Math.max(1,Math.round(file.size/1024))} КБ`:`${(file.size/1024/1024).toFixed(1)} МБ`;const name=messageNode('span',file.name),size=messageNode('small',sizeText),remove=messageNode('button','Удалить');
-      remove.type='button';remove.setAttribute('aria-label','Удалить '+file.name);remove.addEventListener('click',()=>{selected.splice(index,1);render();});row.append(name,size,remove);list.append(row);
-    });input.files=dt.files;update();};
+      const role=document.createElement('select');role.setAttribute('aria-label','Роль '+file.name);[['target','Проверить'],['approved_reference','Как основание']].forEach(([value,label])=>{const option=messageNode('option',label);option.value=value;role.append(option);});role.value=roles.get(file)||'target';roles.set(file,role.value);role.onchange=()=>{roles.set(file,role.value);roleInput.value=JSON.stringify(selected.map(f=>roles.get(f)||'target'));};
+      remove.type='button';remove.setAttribute('aria-label','Удалить '+file.name);remove.addEventListener('click',()=>{selected.splice(index,1);render();});row.append(name,size,role,remove);list.append(row);
+    });input.files=dt.files;roleInput.value=JSON.stringify(selected.map(f=>roles.get(f)||'target'));update();};
     const add=files=>{const problems=[];for(const file of files){
       if(!/\.docx?$/i.test(file.name)){problems.push(file.name+': нужен DOC или DOCX.');continue;}
       if(file.size>50*1024*1024){problems.push(file.name+': больше 50 МБ.');continue;}
@@ -41,11 +43,15 @@
     ['dragleave','drop'].forEach(name=>drop.addEventListener(name,event=>{event.preventDefault();drop.classList.remove('drag-over');}));
     drop.addEventListener('drop',event=>add(Array.from(event.dataTransfer.files)));add(Array.from(input.files));
   }
+  const prompt=form.elements.namedItem('user_prompt');
+  if(prompt)prompt.addEventListener('input',()=>{const text=prompt.value.toLowerCase(),patterns={sto:/(^|[^а-яё])сто([^а-яё]|$)|норматив/,logic:/логик/,language:/граммат|грамот|язык|терминолог|орфограф/,formatting:/оформлен/};
+    const directions=Object.keys(patterns).filter(k=>patterns[k].test(text));if(directions.length){form.querySelectorAll('[name=checks]').forEach(x=>x.checked=directions.includes(x.value));update();}});
   form.addEventListener('change',update);update();
   form.addEventListener('submit',async event=>{
     event.preventDefault();if(submitting||!update())return;
     form.querySelectorAll('[data-launch-error-field]').forEach(x=>x.replaceChildren());summary.hidden=true;summary.replaceChildren();
     submitting=true;form.setAttribute('aria-busy','true');const original=button.innerHTML;button.disabled=true;button.textContent='Сохраняем и запускаем…';
+    form.dispatchEvent(new CustomEvent('normcontrol-launch-state',{bubbles:true,detail:true}));
     try{
       const response=await fetch(form.action||location.href,{method:'POST',body:new FormData(form),credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}});
       if(response.redirected)throw new Error('Сессия или состояние пакета изменились. Обновите страницу; выбранные файлы пока остаются в форме.');
@@ -61,6 +67,6 @@
       summary.prepend(messageNode('strong','Проверка не запущена. Исправьте отмеченные поля.'));summary.hidden=false;
       if(firstField instanceof Element)firstField.setAttribute('aria-invalid','true');summary.focus();summary.scrollIntoView({behavior:'auto',block:'center'});
     }catch(failure){summary.textContent=failure.name==='TypeError'?'Не удалось связаться с сервером. Повторите нажатие: выбранные файлы сохранены, второй пакет создан не будет.':failure.message;summary.hidden=false;summary.focus();}
-    finally{submitting=false;form.removeAttribute('aria-busy');button.innerHTML=original;update();}
+    finally{submitting=false;form.removeAttribute('aria-busy');button.innerHTML=original;update();form.dispatchEvent(new CustomEvent('normcontrol-launch-state',{bubbles:true,detail:false}));}
   });
 })();

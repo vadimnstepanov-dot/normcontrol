@@ -303,6 +303,7 @@ def claim(worker_id, capabilities, features=()):
                 result={'reason':'attempts_exhausted'} if c.state=='failed' else {})
     for c in Command.objects.select_for_update().filter(state='pending',kind__in=capabilities).order_by('created','id'):
         if c.kind=='review.execute':
+            if any(d.get('review_role')=='approved_reference' for d in c.payload.get('documents',[])) and 'document-roles-v1' not in features:continue
             if c.payload.get('pipeline_version')=='pipeline-v1' and 'pipeline-v1' not in features:continue
             if c.payload.get('logging',{}).get('enabled') and 'check-log-v1' not in features:continue
             if c.payload.get('visual_version') and c.payload['visual_version'] not in features:continue

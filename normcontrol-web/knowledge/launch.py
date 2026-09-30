@@ -61,6 +61,8 @@ class LaunchForm(forms.Form):
 
 
 class NewLaunchForm(LaunchForm):
+    user_prompt=forms.CharField(label='Задание для проверки',max_length=6000,required=False,
+        widget=forms.Textarea(attrs={'rows':3,'placeholder':'Например: проверь ЧТЗ по СТО, грамматике и логике; ТЗ используй как основание.'}))
     name=forms.CharField(label='Название проверки',max_length=160,required=False,
         widget=forms.TextInput(attrs={'placeholder':'Необязательно — используем название первого файла'}))
 

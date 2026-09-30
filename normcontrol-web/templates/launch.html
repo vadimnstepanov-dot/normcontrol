@@ -1,14 +1,15 @@
 {% extends 'base.html' %}{% load static %}
 {% block title %}{% if attaching %}Добавить проверку СТО{% else %}Новая проверка{% endif %}{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{% static 'launch.css' %}?v=20260928-1">
-<script defer src="{% static 'launch.js' %}?v=20260928-1"></script>
+<link rel="stylesheet" href="{% static 'launch.css' %}?v=094-prompt1">
+<script defer src="{% static 'launch.js' %}?v=094-prompt1"></script>
 <a class="back-link" href="{% url 'dashboard' %}">← Рабочее пространство</a>
 <div class="page-heading launch-heading"><div><span class="eyebrow">НОРМОКОНТРОЛЬ ДОКУМЕНТОВ</span><h1>{% if attaching %}Добавить проверку СТО{% else %}Новая проверка{% endif %}</h1><p>{% if batch %}{{ batch.name }}{% else %}Добавьте документы и выберите направления. Всё готово к запуску на этой странице.{% endif %}</p></div><span class="launch-badge">Один экран · один запуск</span></div>
 <form method="post" enctype="multipart/form-data" id="launch-form" data-existing-count="{{ batch.documents.count|default:0 }}" data-attaching="{{ attaching|yesno:'true,false' }}">
 {% csrf_token %}{{ form.launch_key }}
 <div class="notice error" id="launch-error-summary" tabindex="-1" role="alert" {% if not form.non_field_errors %}hidden{% endif %}>{{ form.non_field_errors }}</div>
 <div class="launch-grid"><div class="launch-fields">
+{% if not batch %}<section class="panel form-panel launch-section launch-prompt" aria-labelledby="launch-prompt-title"><h2 id="launch-prompt-title">Задание для проверки</h2><div class="field"><label for="{{ form.user_prompt.id_for_label }}">Промпт пользователя</label>{{ form.user_prompt }}<div data-launch-error-field="user_prompt">{{ form.user_prompt.errors }}</div></div><p class="muted">Указанные в тексте направления отмечаются ниже. Перед запуском проверьте флажки, роли документов и нормативную базу. Текст сохраняется в беседе; произвольные новые правила проверки из него автоматически не создаются.</p></section>{% endif %}
 <section class="panel form-panel launch-section" aria-labelledby="launch-documents-title"><h2 id="launch-documents-title"><span class="section-number">01</span> Документы</h2>
 {% if batch %}<ul class="launch-existing-files">{% for d in batch.documents.all %}<li><span class="doc-icon" aria-hidden="true">W</span><div><strong>{{ d.name }}</strong><small>{{ d.detected_type }} · {{ d.size|filesizeformat }}</small></div></li>{% endfor %}</ul>
 {% else %}<label class="dropzone launch-dropzone" id="dropzone" for="documents"><span class="upload-icon" aria-hidden="true">↑</span><strong>Выберите или перетащите документы</strong><small>DOC / DOCX · до 20 файлов · 50 МБ на файл · 100 МБ на пакет</small><input type="file" name="documents" id="documents" accept=".doc,.docx" multiple aria-describedby="upload-error"></label>

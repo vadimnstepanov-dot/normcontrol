@@ -18,6 +18,7 @@ from .models import Batch,Document,WorkerRun,ReviewFeedback,FindingDisposition,L
 from .report_export import TYPE_LABELS, finding_type, task_errors, make_xlsx, make_docx
 from .access import visible_batch, editable_batch, can_edit
 
+
 def worker(view):
     @csrf_exempt
     @wraps(view)
@@ -202,6 +203,8 @@ def claim(request):
                 if c.payload.get('pipeline_version')!='pipeline-v1' and dependency_ready(c):return JsonResponse({'job':None})
         batch=run.batch if run else Batch.objects.select_for_update().filter(status='waiting',worker_run__isnull=True,archived=False).order_by('queue_position','created','pk').first()
         if not batch:return JsonResponse({'job':None})
+        if batch.documents.filter(review_role='approved_reference').exists() and 'document-roles-v1' not in features:
+            return JsonResponse({'job':None,'reason':'document_roles_worker_upgrade_required'})
         if batch.logging_enabled and 'check-log-v1' not in features:return JsonResponse({'job':None,'reason':'check_log_worker_upgrade_required'})
         if not run:run=WorkerRun.objects.create(batch=batch,worker=name)
         checks=batch.checks
@@ -215,7 +218,7 @@ def claim(request):
         if settings.KNOWLEDGE_V2_ENABLED:
             # V2 owns STO: never silently substitute the legacy catalog.
             checks=[x for x in checks if x!='sto']
-        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'logging_enabled':batch.logging_enabled,**pipeline,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
+        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'logging_enabled':batch.logging_enabled,**pipeline,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size,'role':d.review_role} for d in batch.documents.all()]})
 
 @worker
 @require_POST
@@ -395,3 +398,29 @@ def disposition(request,pk,finding_id):
     if state=='disputed' and len(comment)<8:return JsonResponse({'error':'Для несогласия укажите обоснование'},status=400)
     value,_=FindingDisposition.objects.update_or_create(batch=batch,finding_id=finding_id,defaults={'author':request.user,'state':state,'comment':comment})
     return JsonResponse({'state':value.state,'label':allowed[value.state],'author':request.user.get_full_name() or request.user.username,'updated':value.updated.isoformat()})
+
+@worker
+@require_POST
+def review_source(request,lease,document_id):
+    import base64,tempfile,hashlib
+    from pathlib import Path
+    from django.core.files.base import ContentFile
+    from .word_review import load
+    run=get_object_or_404(WorkerRun,lease=lease)
+    document=get_object_or_404(Document,batch=run.batch,pk=document_id)
+    data=body(request)
+    if data.get('source_sha256')!=document.sha256:raise ValueError('Source identity differs')
+    content=base64.b64decode(data['docx'],validate=True)
+    if len(content)>18*1024**2:raise ValueError('Working copy limit')
+    working_hash=hashlib.sha256(content).hexdigest()
+    if working_hash!=data.get('working_sha256'):raise ValueError('Working identity differs')
+    with tempfile.TemporaryDirectory() as directory:
+        path=Path(directory)/'working.docx';path.write_bytes(content);load(path)
+    with transaction.atomic():
+        document=Document.objects.select_for_update().get(pk=document.pk)
+        if document.review_working_sha256 and document.review_working_sha256!=working_hash:
+            return JsonResponse({'error':'A different canonical copy is already pinned'},status=409)
+        if not document.review_working_file:
+            document.review_working_file.save(working_hash+'.docx',ContentFile(content),save=False)
+            document.review_working_sha256=working_hash;document.save(update_fields=['review_working_file','review_working_sha256'])
+    return JsonResponse({'accepted':True,'working_sha256':working_hash})

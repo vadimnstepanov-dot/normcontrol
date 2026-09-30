@@ -31,6 +31,13 @@ class TraceTests(unittest.TestCase):
         self.store=KnowledgeStore(Path(self.tmp.name));self.model=Model();self.docs,self.facts,self.link=fixtures()
     def execute(self,links=None,callback=None,job='job'):
         return run(self.store,job,[self.link] if links is None else links,self.docs,self.facts,lambda *a:True,self.model,lambda *a:True,callback or (lambda *a:False))
+    def test_reference_remains_source_and_is_not_missing_target(self):
+        self.docs[0]['review_role']='approved_reference'
+        b,initial=plan([self.link],self.docs,self.facts,lambda *a:True,self.model)
+        self.assertEqual(len(b),1);self.assertEqual(b[0]['payload']['obligations'][0]['source_documents'],['source-doc'])
+        self.link['source_type']='ЧТЗ';self.link['target_type']='ТЗ';self.link['condition']={'fact':{'name':'document_type','in':['ЧТЗ']}}
+        b,initial=plan([self.link],self.docs,self.facts,lambda *a:True,self.model)
+        self.assertEqual(b,[]);self.assertEqual(initial[0]['state'],'not_applicable');self.assertNotIn('absence_proof',initial[0])
     def test_proved_chain_and_weakened_constraint_have_exact_both_sides(self):
         self.model.outcome='satisfied';self.model.claim='presence'
         r=self.execute();self.assertEqual(r['rows'][0]['state'],'checked');self.assertEqual(len(r['rows'][0]['evidence']),2)

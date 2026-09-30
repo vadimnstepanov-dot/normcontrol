@@ -84,6 +84,9 @@ def sign_out(request):logout(request);return redirect('login')
 
 @login_required
 def dashboard(request):
+    if request.GET.get('presentation')!='expert' and request.GET.get('embedded')!='1' and request.headers.get('Sec-Fetch-Dest')!='iframe':
+        from .chat import page
+        return page(request)
     qs=batches(request);archived=request.GET.get('archive')=='1';active=qs.filter(archived=archived).order_by('-created','-pk')
     query=request.GET.get('q','')[:160]
     if query:active=active.filter(name__icontains=query)
@@ -183,7 +186,15 @@ def new_batch(request):
     if request.method=='POST':
         if form.is_valid():
             try:
-                batch,created=launch_uploaded(request.user,form.cleaned_data,request.FILES.getlist('documents'))
+                data=dict(form.cleaned_data)
+                if request.POST.get('document_roles'):
+                    import json
+                    data['document_roles']=json.loads(request.POST['document_roles'])
+                batch,created=launch_uploaded(request.user,data,request.FILES.getlist('documents'))
+                if data.get('user_prompt'):
+                    from .models import Conversation,ChatMessage
+                    conversation,_=Conversation.objects.get_or_create(owner=request.user,batch=batch,defaults={'title':batch.name})
+                    ChatMessage.objects.get_or_create(conversation=conversation,key=data['launch_key'],defaults={'role':'user','text':data['user_prompt'],'metadata':{'checks':batch.checks,'documents':[{'id':d.pk,'name':d.name,'role':d.review_role} for d in batch.documents.all()]}})
                 request.session['check_logging_enabled']=bool(form.cleaned_data.get('logging_enabled'))
                 return launch_response(request,batch,created)
             except PermissionDenied:form.add_error(None,'Доступ к нормативной базе изменился. Обновите страницу и проверьте выбранные наборы.')
@@ -230,7 +241,7 @@ def add_documents(request,pk):
             if not source.can_rerun or source.archived:raise ValueError('Состояние пакета изменилось. Обновите страницу.')
             if source.reruns.filter(status__in=('prepared','waiting','preparing','running','paused')).exists():raise ValueError('Для этого пакета уже подготовлена или выполняется новая проверка.')
             revision=Batch.objects.create(owner=source.owner,name=(source.name+' — дополнен')[:160],profile=source.profile,checks=list(source.checks),status='prepared' if settings.KNOWLEDGE_V2_ENABLED else 'waiting',source_batch=source,fresh_review=True,queue_position=next_queue_position())
-            Document.objects.bulk_create([Document(batch=revision,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline) for d in source.documents.all()])
+            Document.objects.bulk_create([Document(batch=revision,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline,review_role=d.review_role,review_working_file=d.review_working_file,review_working_sha256=d.review_working_sha256) for d in source.documents.all()])
             for f,meta in prepared:
                 doc=Document(batch=revision,name=Path(f.name.replace('\\','/')).name[:240],size=f.size,**meta)
                 doc.file.save(f.name,f,save=False);saved.append(doc.file.path);doc.save()
@@ -308,7 +319,9 @@ def batch_action(request,pk):
                 return redirect('batch',pk=batch.pk)
             repeated=Batch.objects.create(owner=batch.owner,name=batch.name[:140]+' — повтор',profile=batch.profile,checks=list(batch.checks),status='prepared' if settings.KNOWLEDGE_V2_ENABLED else 'waiting',source_batch=batch,fresh_review=True,queue_position=next_queue_position())
             # Uploaded files are immutable; keep references without copying large files on the VPS.
-            Document.objects.bulk_create([Document(batch=repeated,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline) for d in documents])
+            Document.objects.bulk_create([Document(batch=repeated,name=d.name,file=d.file.name,size=d.size,sha256=d.sha256,paragraphs=d.paragraphs,tables=d.tables,outline=d.outline,review_role=d.review_role,review_working_file=d.review_working_file,review_working_sha256=d.review_working_sha256) for d in documents])
+            repeated.review_scope={str(d.pk):d.review_role for d in repeated.documents.all()}
+            repeated.save(update_fields=['review_scope'])
             audit(request,'Повторный нормоконтроль: '+str(batch.pk)+' → '+str(repeated.pk))
         if settings.KNOWLEDGE_V2_ENABLED:
             messages.success(request,'Повтор подготовлен. Подтвердите направления и актуальные нормативы. Предыдущий отчёт сохранён.')

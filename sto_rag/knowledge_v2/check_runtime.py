@@ -102,9 +102,11 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
         visual_enabled=payload.get('visual_version')=='visual-tail-v1'
         if visual_enabled:
             from .visual_tail import prepare
-            prepare(paths,docs,store)
+            selected_visual=[(p,d) for p,d,declared in zip(paths,docs,payload['documents']) if declared.get('review_role')!='approved_reference']
+            prepare([p for p,d in selected_visual],[d for p,d in selected_visual],store)
         if len(docs)!=len(paths):raise ValueError('Corpus count changed')
-        for doc,declared in zip(docs,payload['documents']):doc['name']=declared['name']
+        for doc,declared in zip(docs,payload['documents']):
+            doc['name']=declared['name'];doc['review_role']=declared.get('review_role','unassigned')
         trace_enabled=payload.get('trace_version')=='package-trace-9.1.6'
         if trace_enabled:
             from .document_types import classify,declared_types,declared_stages
@@ -170,7 +172,7 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
             else:
                 from .template_check import build,TITLE
                 preparing('template',TITLE)
-                template_comparison=build(store,docs,[release_records(store,x['release_id'],authorize)[1] for x in selected],facts)
+                template_comparison=build(store,[d for d in docs if d.get('review_role')!='approved_reference'],[release_records(store,x['release_id'],authorize)[1] for x in selected],facts)
                 preparing('template','Структура сопоставлена; содержание будет дополнено результатами нормативной проверки',template_comparison=template_comparison)
                 emit('template_comparison',template_comparison)
         selector=None

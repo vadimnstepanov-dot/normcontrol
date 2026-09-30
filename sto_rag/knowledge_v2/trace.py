@@ -99,7 +99,8 @@ def plan(links,docs,facts,verify,client,*,routing_policy=None):
     for link in links:
         matched=lambda kind:[d for d in docs if kind.casefold() in [t.casefold() for t in d.get('classification',{}).get('types',[d.get('classification',{}).get('type','')])]
                                     and 'document_type' in facts.get(d['id'],{})]
-        source,target=matched(link['source_type']),matched(link['target_type'])
+        source=matched(link['source_type'])
+        target=[d for d in matched(link['target_type']) if d.get('review_role')!='approved_reference']
         condition=evaluate(link['condition'],facts.get(source[0]['id'],{}) if len(source)==1 else {},verify,review_scope=routing_policy is not None)
         row=dict(id=checksum([link['release_id'],link['id'],link['revision']]),link=link,
                  source_documents=[d['id'] for d in source],target_documents=[d['id'] for d in target])
@@ -113,6 +114,8 @@ def plan(links,docs,facts,verify,client,*,routing_policy=None):
         if routing_policy and set(row['source_documents'])&set(row['target_documents']):
             finish('unknown','Роли исходной и целевой стороны пересекаются в одном документе; междокументная связь не установлена.');continue
         if not target:
+            if any(d.get('review_role')=='approved_reference' for d in matched(link['target_type'])):
+                finish('not_applicable','Документ этой стороны явно назначен основанием и исключён из целевой области проверки.');continue
             if any(d.get('classification',{}).get('type')=='unknown' or d.get('gaps') for d in docs):
                 finish('unknown','Состав комплекта нельзя доказать: неизвестный тип документа или непрочитанная область.');continue
             state='violated' if link['mandatory_target'] else 'unknown'

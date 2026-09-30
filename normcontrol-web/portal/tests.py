@@ -14,6 +14,8 @@ def document(name='test.docx',text='Тестовый документ'):
 @override_settings(KNOWLEDGE_V2_ENABLED=False)
 class PortalTests(TestCase):
     def setUp(self):
+        # This suite exercises the retained full interface inside the chat shell.
+        self.client.defaults['HTTP_SEC_FETCH_DEST']='iframe'
         self.user=User.objects.create_user('owner',password='Testing-Password-For-2026')
         self.other=User.objects.create_user('other',password='Testing-Password-For-2026')
         self.admin=User.objects.create_user('administrator',password='Testing-Password-For-2026',is_staff=True)

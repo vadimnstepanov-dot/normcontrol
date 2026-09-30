@@ -7,6 +7,8 @@ class AccessProfile(models.Model):
     must_change_password=models.BooleanField(default=False)
     can_view_others=models.BooleanField(default=False)
     is_expert=models.BooleanField(default=False)
+    presentation=models.CharField(max_length=12,default='chat',choices=[('chat','Чат'),('expert','Полный интерфейс')])
+    theme=models.CharField(max_length=8,blank=True,choices=[('light','Светлая'),('dark','Тёмная')])
 
 class Batch(models.Model):
     id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
@@ -20,10 +22,33 @@ class Batch(models.Model):
     archived=models.BooleanField(default=False)
     source_batch=models.ForeignKey('self',null=True,blank=True,on_delete=models.SET_NULL,related_name='reruns')
     fresh_review=models.BooleanField(default=False)
+    review_scope=models.JSONField(default=dict)
     queue_position=models.BigIntegerField(default=0,db_index=True)
     @property
     def can_rerun(self):return self.status in ('completed','partial','failed','cancelled')
     class Meta:ordering=['-created']
+
+class Conversation(models.Model):
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    owner=models.ForeignKey(User,on_delete=models.CASCADE)
+    batch=models.ForeignKey(Batch,null=True,blank=True,on_delete=models.SET_NULL,related_name='conversations')
+    title=models.CharField(max_length=160,default='Новая проверка')
+    draft=models.JSONField(default=dict)
+    created=models.DateTimeField(auto_now_add=True)
+    updated=models.DateTimeField(auto_now=True)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['owner','batch'],name='unique_user_batch_conversation')]
+
+class ChatMessage(models.Model):
+    conversation=models.ForeignKey(Conversation,on_delete=models.CASCADE,related_name='messages')
+    key=models.UUIDField(default=uuid.uuid4)
+    role=models.CharField(max_length=12,choices=[('user','Пользователь'),('assistant','Система')])
+    text=models.TextField()
+    metadata=models.JSONField(default=dict)
+    created=models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering=['id']
+        constraints=[models.UniqueConstraint(fields=['conversation','key'],name='unique_chat_message_key')]
 
 def private_path(instance,filename):return str(instance.batch_id)+'/'+uuid.uuid4().hex+'.docx'
 
@@ -45,6 +70,9 @@ class Document(models.Model):
     paragraphs=models.PositiveIntegerField(default=0)
     tables=models.PositiveIntegerField(default=0)
     outline=models.JSONField(default=list)
+    review_role=models.CharField(max_length=24,choices=[('unassigned','Роль не задана'),('target','Проверяемый документ'),('approved_reference','Утверждённый эталон')],default='unassigned')
+    review_working_file=models.FileField(upload_to='review-sources/',blank=True)
+    review_working_sha256=models.CharField(max_length=64,blank=True)
     @property
     def detected_type(self):
         name=self.name.casefold()
@@ -131,3 +159,27 @@ class LLMRuntime(models.Model):
     history=models.JSONField(default=list)
     command=models.JSONField(default=dict)
     updated=models.DateTimeField(auto_now=True)
+
+class WordReviewExport(models.Model):
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    batch=models.ForeignKey(Batch,on_delete=models.PROTECT,related_name='word_exports')
+    owner=models.ForeignKey(User,on_delete=models.PROTECT)
+    key=models.CharField(max_length=64)
+    state=models.CharField(max_length=16,default='planned')
+    snapshot=models.JSONField(default=dict)
+    plans=models.JSONField(default=list)
+    result=models.JSONField(default=dict)
+    error=models.TextField(blank=True)
+    artifact=models.FileField(upload_to='word-reviews/',blank=True)
+    created=models.DateTimeField(auto_now_add=True)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['batch','key'],name='word_review_snapshot_key')]
+
+class WordReviewProposal(models.Model):
+    batch=models.ForeignKey(Batch,on_delete=models.PROTECT)
+    document=models.ForeignKey(Document,on_delete=models.PROTECT)
+    finding_id=models.CharField(max_length=160)
+    result_version=models.CharField(max_length=64)
+    operation=models.JSONField()
+    author=models.ForeignKey(User,on_delete=models.PROTECT)
+    created=models.DateTimeField(auto_now_add=True)

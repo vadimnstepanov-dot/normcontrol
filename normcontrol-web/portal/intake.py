@@ -29,6 +29,8 @@ def launch_response(request,batch,created=True):
     return JsonResponse({'next':target}) if request.headers.get('X-Requested-With')=='XMLHttpRequest' else redirect(target)
 
 class UploadForm(forms.Form):
+    user_prompt=forms.CharField(label='Задание для проверки',max_length=6000,required=False,
+        widget=forms.Textarea(attrs={'rows':3,'placeholder':'Например: проверь ЧТЗ по СТО, грамматике и логике; ТЗ используй как основание.'}))
     name=forms.CharField(label='Название проверки',max_length=160,required=False,
         widget=forms.TextInput(attrs={'placeholder':'Необязательно — используем название первого файла'}))
     checks=forms.MultipleChoiceField(label='Направления проверки',choices=CHECKS,
@@ -42,14 +44,24 @@ def launch_uploaded(user,data,files):
     if not 1<=len(files)<=20:raise ValueError('Добавьте от 1 до 20 документов.')
     if sum(f.size for f in files)>100*1024*1024:raise ValueError('Общий размер пакета — не более 100 МБ.')
     prepared=[]
+    roles=data.get('document_roles') or ['target']*len(files)
+    if len(roles)!=len(files) or any(r not in ('target','approved_reference') for r in roles) or 'target' not in roles:
+        raise ValueError('Укажите роль каждого документа; нужен хотя бы один проверяемый документ.')
     for file in files:
         try:prepared.append((file,inspect_word(file)))
         except ValueError as error:raise ValueError(f'«{Path(file.name.replace(chr(92),"/")).name}»: {error}') from error
+    content_roles={}
+    for (_,meta),role in zip(prepared,roles):
+        previous_role=content_roles.setdefault(meta['sha256'],role)
+        if previous_role!=role:
+            raise ValueError('Одинаковый документ назначен одновременно проверяемым и основанием. Оставьте одну роль для этой копии.')
     directions=[key for key,_ in CHECKS if key in data['checks']]
     title=data.get('name') or Path(files[0].name.replace('\\','/')).stem[:160]
     fingerprint=hashlib.sha256(json.dumps({'name':title,'checks':directions,
+        'user_prompt':data.get('user_prompt',''),
         'sets':sorted(data.get('normative_sets',[])),'experience':data.get('experience') or '',
         'v2':settings.KNOWLEDGE_V2_ENABLED,'logging_enabled':bool(data.get('logging_enabled')),
+        'roles':[(m['sha256'],r) for (_,m),r in zip(prepared,roles)],
         'documents':sorted((Path(f.name.replace('\\','/')).name[:240],f.size,m['sha256']) for f,m in prepared)},
         sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     saved=[]
@@ -62,9 +74,11 @@ def launch_uploaded(user,data,files):
             used=Document.objects.values('file').annotate(stored_size=Max('size')).aggregate(total=Sum('stored_size'))['total'] or 0
             if used+sum(f.size for f in files)>2*1024**3:raise ValueError('Хранилище заполнено. Обратитесь к администратору.')
             batch=Batch.objects.create(owner=user,name=title,checks=directions,status='prepared')
-            for f,meta in prepared:
-                doc=Document(batch=batch,name=Path(f.name.replace('\\','/')).name[:240],size=f.size,**meta)
+            for (f,meta),role in zip(prepared,roles):
+                doc=Document(batch=batch,name=Path(f.name.replace('\\','/')).name[:240],size=f.size,review_role=role,**meta)
                 doc.file.save(f.name,f,save=False);saved.append((doc.file.storage,doc.file.name));doc.save()
+            batch.review_scope={str(d.pk):d.review_role for d in batch.documents.all()}
+            batch.save(update_fields=['review_scope'])
             if settings.KNOWLEDGE_V2_ENABLED:
                 from knowledge.launch import start
                 start(user,batch.pk,directions,data.get('normative_sets',[]),data.get('experience'),data['launch_key'],logging_enabled=bool(data.get('logging_enabled')))

@@ -413,6 +413,7 @@ class ReviewRunner:
         if set(release_profiles) != {d['id'] for d in docs}: raise ValueError('Explicit profiles for each document required')
         rows = []
         for doc in docs:
+            if doc.get('review_role')=='approved_reference':continue
             for release, profiles in release_profiles[doc['id']].items():
                 selected = ledger(self.store, release, profiles, facts.get(doc['id'], {}), self.authorize, verify_fact, include_candidates=include_candidates)
                 for row in selected:
@@ -435,6 +436,8 @@ class ReviewRunner:
                         profile_definitions=checksum([r['profile_versions'] for r in rows]),
                         settings=dict(context=self.client.context, output=self.client.output_tokens),
                         documents=[d['sha256'] for d in docs], facts=checksum(facts))
+        if any(d.get('review_role')=='approved_reference' for d in docs):
+            versions['review_roles']=checksum([{d['id']:d.get('review_role','unassigned')} for d in docs])
         if experience_releases:
             from .experience import VERSION as EXPERIENCE_VERSION
             versions['experience']=dict(version=EXPERIENCE_VERSION,scope_id=self.experience_selector.scope_id,

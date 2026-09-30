@@ -62,6 +62,7 @@ class Engine:
         for path in data['paths']:
             source=Path(path).resolve(strict=True);prepared=prepare_word(source,data['options']);doc=parse(prepared,cat)
             doc['source_path']=str(source);doc['source_sha256']=checksum(source);doc['storage_name']=prepared.name
+            doc['review_role']=data['options'].get('document_roles',{}).get(str(source),'unassigned')
             if source.suffix.casefold()=='.doc':
                 converted_name=doc['name'];doc['name']=source.name;doc['source_format']='doc'
                 for block in doc['blocks']:
@@ -93,6 +94,7 @@ class Engine:
         index=Index(docs)
         for doc in docs:
             if self.store.job(jid)['state'] in ('paused','cancelled'):return
+            if doc.get('review_role')=='approved_reference':continue
             from .formatting import check as check_formatting
             format_findings,format_coverage=check_formatting(doc,cat,data['options']['formatting'])
             write(DATA/'jobs'/jid/(doc['id']+'-formatting.json'),format_coverage)
@@ -203,6 +205,11 @@ class Engine:
         return result
     @measured('nc5.plan')
     def enqueue_bounded(self,jid,stage,payload,data,depth=0):
+        if data['options'].get('document_roles') and 'review_roles' not in payload:
+            roles=[{'document':d['id'],'role':d.get('review_role','unassigned')} for d in self.material(jid)]
+            if any(r['role']=='approved_reference' for r in roles):
+                payload=dict(payload,review_roles=roles)
+                payload['directions']=payload.get('directions','')+' Документы approved_reference — только основания: не ищи в них собственные дефекты. Замечание адресуй проверяемому документу; при противоречии цитируй также основание.'
         tokens=self.client.count(payload)
         if tokens+output_budget(self.config,payload)+self.config['margin']<=self.client.context:
             key=response_cache_key(self.client,payload) if isinstance(self.client,Client) else digest([VERSION,self.client.signature,stage,payload])
@@ -368,6 +375,9 @@ class Engine:
                 item=route_finding(item,task['stage'])
                 if any((e['document'],e['locator']) not in allowed for e in item['evidence']):raise ValueError('Цитата вне пакета')
                 f=validate_finding(item,docs,cards)
+                references={d['id'] for d in docs if d.get('review_role')=='approved_reference'}
+                if f.get('evidence') and all(e['document'] in references for e in f['evidence']):
+                    raise ValueError('Замечание адресовано только документу-основанию; он не входит в область проверки')
                 if f.get('needs_full_scope') and f.get('requirement_id') in cards:
                     from .normative_contract import scope_proof
                     f['scope_proof']=scope_proof(f,task['payload'],docs,cards[f['requirement_id']])
@@ -508,6 +518,7 @@ class Engine:
                     self.enqueue_bounded(jid,stage,payload,data)
             # Whole-document links/appendix titles are checked against the complete tree.
             for d in docs:
+                if d.get('review_role')=='approved_reference':continue
                 for payload in reference_payloads(d,group_size=data['options'].get('reference_group_size',1)):self.enqueue_bounded(jid,stage,payload,data)
         if stage=='inter' and len(docs)>1:
             byid={d['id']:d for d in docs}
