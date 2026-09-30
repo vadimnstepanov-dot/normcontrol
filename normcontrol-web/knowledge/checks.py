@@ -25,7 +25,7 @@ def start(user,batch_id,set_ids,experience_set_id,key,*,workflow=None):
     if not isinstance(set_ids,list) or not 1<=len(set_ids)<=20 or len(set_ids)!=len(set(set_ids)):
         raise ValueError('Choose one to twenty unique normative sets')
     if not isinstance(key,str) or not 1<=len(key)<=128:raise ValueError('Idempotency-Key required')
-    if workflow is not None and (not isinstance(workflow,dict) or set(workflow)!={'unified_launch','after_non_normative','directions'}):
+    if workflow is not None and (not isinstance(workflow,dict) or set(workflow)-{'unified_launch','after_non_normative','directions','pipeline_version'} or not {'unified_launch','after_non_normative','directions'}<=set(workflow) or workflow.get('pipeline_version','pipeline-v1')!='pipeline-v1'):
         raise ValueError('Invalid workflow metadata')
     identity=digest(['check-start',user.pk,key]);old=Command.objects.filter(idempotency_key=identity).first()
     if old:

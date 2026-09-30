@@ -24,9 +24,8 @@ class OutputError(ValueError):
         super().__init__(message);self.response=response or {};self.metrics={'seconds':seconds,'usage':self.response.get('usage',{}),'timings':self.response.get('timings',{})}
 
 def output_budget(config,payload):
-    # Logic returns both facts and findings: starting at 2048 often truncates a
-    # valid response before retrying the same source with 4096. Reserve that
-    # capacity on the first pass; other stages keep their smaller budgets.
+    # Logic includes extracted facts and findings; retain its existing 4096 cap.
+    # Other stages keep their specialized output budgets.
     cap={'language':1024,'logic':4096,'sto':1792,'cross':2048,'inter':2048,'verify':1280,'feedback':1280}.get(payload['stage'],config['output'])
     if payload['stage']=='sto':cap=max(cap,512+320*sum(len(r.get('obligations',[])) for r in payload.get('requirements',[])))
     if payload['stage']=='verify' and config.get('verify_reasoning'):cap=2048
@@ -50,6 +49,13 @@ class Client:
         if path=='/props':emit('model_configuration',value)
         return value
     def probe(self):
+        if self.config.get('pipeline_id'):
+            from pipeline import host
+            from llm_sidecar import ensure_profile
+            with host().turn(self.config['pipeline_id'],'native_probe','gpu',ram_mb=64):
+                ensure_profile('text');return self._probe()
+        return self._probe()
+    def _probe(self):
         self.props=self.http('/props',timeout=15)
         real=int(self.props['default_generation_settings']['n_ctx']);self.context=min(real,self.config['context'])
         self.signature=digest({'path':self.props.get('model_path'),'meta':self.props.get('model_meta'),'template':self.props.get('chat_template'),'params':self.props.get('default_generation_settings')})
@@ -118,6 +124,13 @@ class Client:
             'response_format':{'type':'json_schema','json_schema':{'name':'review_v5','strict':True,'schema':schema}}}
     @measured('nc5.count')
     def count(self,payload):
+        if self.config.get('pipeline_id'):
+            from pipeline import host
+            from llm_sidecar import ensure_profile
+            with host().turn(self.config['pipeline_id'],'native_tokenize','gpu',ram_mb=64):
+                ensure_profile('text');return self._count(payload)
+        return self._count(payload)
+    def _count(self,payload):
         key=digest(payload)
         observe('nc5.count_cache_hit' if key in self.count_cache else 'nc5.count_cache_miss')
         if key in self.count_cache:return self.count_cache[key]
@@ -143,7 +156,19 @@ class Client:
         from .common import DATA
         start=time.time()
         attempts=[]
-        with Lease(DATA/'model.lock'):
+        from contextlib import nullcontext,contextmanager
+        from pipeline import host
+        pipeline=self.config.get('pipeline_id')
+        turn=nullcontext()
+        if pipeline:
+            from llm_sidecar import ensure_profile
+            # Profile changes and generation share one host admission ticket.
+            @contextmanager
+            def text_turn():
+                with host().turn(pipeline,payload.get('stage','native'),'gpu'):
+                    ensure_profile('text');yield
+            turn=text_turn()
+        with turn,Lease(DATA/'model.lock'):
             r=self.http('/v1/chat/completions',self.request(payload))
             attempts.append({'usage':r.get('usage',{}),'timings':r.get('timings',{}),'budget':budget})
             # Retry the same evidence once before fragmenting it. The reserve and

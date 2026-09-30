@@ -42,6 +42,21 @@ class Engine:
         return value
     @measured('nc5.prepare')
     def prepare(self,jid):
+        data=self.store.job(jid)['data'];pipeline=data['options'].get('pipeline_id')
+        if not pipeline:return self._prepare(jid)
+        from pipeline import host,submit_preparation,preparation_mb
+        coordinator=host();directions=data['options'].get('pipeline_directions',[])
+        coordinator.register(pipeline,directions);coordinator.phase(pipeline,'material','running')
+        try:
+            with coordinator.turn(pipeline,'material','cpu',ram_mb=preparation_mb(data['paths'])):self._prepare(jid)
+            if self.store.job(jid)['state'] in ('paused','cancelled'):
+                coordinator.phase(pipeline,'material','paused');return
+            coordinator.phase(pipeline,'material','done')
+            if 'formatting' in directions:coordinator.phase(pipeline,'formatting','done')
+        except Exception as error:
+            if any(p['stage']=='material' and p['state']=='running' for p in coordinator.status(pipeline)):coordinator.phase(pipeline,'material','failed',type(error).__name__)
+            raise
+    def _prepare(self,jid):
         job=self.store.job(jid);data=job['data'];cat=load_catalog(data['catalog']);probe=self.client.probe();docs=[]
         from .conversion import prepare_word,checksum
         for path in data['paths']:
@@ -62,6 +77,12 @@ class Engine:
             if digest(snapshot.read_bytes())!=doc['sha256']:raise ValueError('Документ изменился во время подготовки: '+doc['name'])
             doc['original_path']=doc['path'];doc['path']=str(snapshot)
         write(DATA/'jobs'/jid/'documents.json',docs);self.cache.put(jid,docs)
+        if data['options'].get('pipeline_id'):
+            from pipeline import host,submit_preparation
+            pipeline=data['options']['pipeline_id'];host().phase(pipeline,'material','done')
+            if 'sto' in data['options'].get('pipeline_directions',[]):
+                prepared={str(Path(d['source_path']).resolve()):d['path'] for d in docs}
+                self.preparation_future=submit_preparation(pipeline,data['paths'],prepared)
         from .planning import document_registry
         registries={doc['id']:document_registry(doc) for doc in docs}
         write(DATA/'jobs'/jid/'analysis-registry.json',registries)
@@ -231,7 +252,10 @@ class Engine:
             job=self.store.job(jid)
             self.config=copy.deepcopy(job['data']['options'])
             if isinstance(self.client,Client):self.client=Client(self.config)
-            self.cache=LRU(self.config['ram_bytes'])
+            if self.config.get('pipeline_id'):
+                from pipeline import cache_budget
+                self.cache=LRU(cache_budget(self.config['ram_bytes']))
+            else:self.cache=LRU(self.config['ram_bytes'])
             self.store.recover(jid)
             def pulse():
                 while not stop.is_set():
@@ -247,11 +271,16 @@ class Engine:
                 self.store.update(jid,'running')
             for stage in STAGES:
                 if self.store.job(jid)['state']!='running':return
+                pipeline=job['data']['options'].get('pipeline_id')
+                if pipeline and stage!='sto':
+                    from pipeline import host
+                    host().phase(pipeline,'verify_native' if stage=='verify' else stage,'running')
                 if stage in ('cross','inter','verify'):self.derive(jid,stage)
                 while self.store.job(jid)['state']=='running':
                     task=self.store.claim(jid,stage)
                     if not task:break
                     self.execute(task)
+                if pipeline and stage!='sto':host().phase(pipeline,'verify_native' if stage=='verify' else stage,'done' if self.store.job(jid)['state']=='running' else 'paused')
             job=self.store.job(jid);tasks=self.store.tasks(jid)
             if job['state']=='running':
                 coverage_unknown=any(x.get('state') in ('unknown','insufficient','unverified') for t in tasks for x in (t.get('result') or {}).get('coverage',[]))
@@ -264,6 +293,9 @@ class Engine:
             self.store.event(jid,'worker_busy',{})
         except Exception as e:
             data=self.store.job(jid)['data'];data['fatal_error']=str(e);self.store.update(jid,'failed',data)
+            if data['options'].get('pipeline_id'):
+                from pipeline import host
+                host().phase(data['options']['pipeline_id'],'verify_native','failed',type(e).__name__)
         finally:
             stop.set()
             if heartbeat:heartbeat.join(2)

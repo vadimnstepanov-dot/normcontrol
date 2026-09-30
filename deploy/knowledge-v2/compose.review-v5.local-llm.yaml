@@ -1,0 +1,15 @@
+# Optional rolling upgrade on a host with the trusted local model gateway.
+# Keep the v4 review-worker image pinned while saved v4 checks can still resume.
+# Legacy plans remain serialized; pipeline-v1 plans use the shared host queue.
+services:
+  review-worker-v5:
+    extends:
+      file: compose.review.yaml
+      service: review-worker
+    image: ${KNOWLEDGE_REVIEW_V5_IMAGE:-normcontrol/review-worker:0.9.3}
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/normcontrol-gateway.crt
+      KNOWLEDGE_LLM_PROFILE_CONTROL: "1"
+      KNOWLEDGE_INCLUDE_NORMATIVE_CANDIDATES: "1"
+    volumes:
+      - ${KNOWLEDGE_GATEWAY_CERT_PATH:?Set trusted gateway certificate}:/etc/ssl/certs/normcontrol-gateway.crt:ro

@@ -229,13 +229,13 @@ def refinement_effects(parent,records,effective,definitions,facts,verify_fact,ap
 
 
 @measured('v2.parse')
-def corpus(paths):
+def corpus(paths,prepared_paths=None):
     """Extract once. Preserve exact text, structure, numeric facts and parse gaps."""
     docs = []
     for value in paths:
         path = Path(value).resolve(strict=True)
         before = sha256(path)
-        parsed = parse(path)
+        parsed = parse((prepared_paths or {}).get(str(path),path))
         if before != sha256(path): raise Conflict('Document changed while parsing')
         blocks = []; paragraph_numbers = {}
         for b in parsed['blocks']:

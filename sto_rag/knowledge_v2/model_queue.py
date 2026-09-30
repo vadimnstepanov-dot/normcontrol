@@ -10,6 +10,10 @@ from .performance import span
 
 @contextmanager
 def model_turn(store,client):
+    if getattr(client,'pipeline_id',None):
+        from pipeline import remote_turn
+        with remote_turn(client,getattr(client,'pipeline_stage','normative')) as ticket:yield ticket
+        return
     ticket=str(uuid.uuid4())
     # Text and Vision endpoints can address the same GPU; serialize by resource,
     # not URL spelling (gateway vs loopback). Multi-GPU deployments may override.
@@ -50,3 +54,16 @@ def model_turn(store,client):
             stop.set();thread.join(timeout=2);client._model_ticket=previous
     finally:
         with store.connection() as db:db.execute('DELETE FROM model_tickets WHERE id=?',(ticket,))
+
+@contextmanager
+def planning_turn(store,client):
+    # Host CPU preparation can overlap inference. Exact tokenizer probes reserve
+    # short model turns individually so profile switches cannot corrupt counts.
+    if getattr(client,'pipeline_id',None):
+        from pipeline import remote_turn
+        with remote_turn(client,'normative_probe',ram_mb=64):
+            from .model_profile import ensure
+            ensure(client,'text')
+        with remote_turn(client,'normative_plan','cpu'):yield
+    else:
+        with model_turn(store,client):yield

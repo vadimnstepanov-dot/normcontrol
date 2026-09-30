@@ -92,8 +92,13 @@ def start(user,batch_id,directions,set_ids,experience,key,*,logging_enabled=Fals
     batch.logging_enabled=logging_enabled;batch.save(update_fields=['logging_enabled'])
     job=None
     if 'sto' in directions:
+        from portal.models import WorkerPresence
+        from django.utils import timezone
+        from datetime import timedelta
+        pipeline=bool(legacy and not run and WorkerPresence.objects.filter(details__pipeline_version='pipeline-v1',state__in=['idle','busy'],heartbeat__gte=timezone.now()-timedelta(seconds=90)).exists())
         job,c=checks.start(user,batch.pk,set_ids,experience or None,str(key),workflow={
-            'unified_launch':True,'after_non_normative':bool(legacy or run),'directions':list(directions)})
+            'unified_launch':True,'after_non_normative':bool(legacy or run),'directions':list(directions),
+            **({'pipeline_version':'pipeline-v1'} if pipeline else {})})
     batch.checks=list(directions)
     if not attach:
         batch.status='waiting' if legacy else 'running'
@@ -117,6 +122,7 @@ def dependency_ready(command):
         command.save(update_fields=['state','result'])
         return False
     if job.pause_requested or job.state=='paused':return False
+    if command.payload.get('pipeline_version')=='pipeline-v1':return batch.status not in ('paused','failed')
     if command.payload.get('after_non_normative'):
         run=WorkerRun.objects.filter(batch=batch).first()
         if not run or run.state not in ('completed','partial','failed','cancelled'):return False

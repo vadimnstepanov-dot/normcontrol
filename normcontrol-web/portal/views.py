@@ -126,11 +126,15 @@ def dashboard(request):
             current=next((j for j in by_batch.values() if j.state in ('queued','running','paused')),None)
             if current:selected=qs.filter(pk=current.batch_id).prefetch_related('documents').first()
         if selected:selected_knowledge=by_batch.get(selected.pk)
-        if selected_knowledge and selected_knowledge.state=='queued':
+        parallel=False
+        if selected_knowledge:
+            from knowledge.models import Command
+            parallel=Command.objects.filter(kind='review.execute',payload__job_id=str(selected_knowledge.pk),payload__pipeline_version='pipeline-v1').exists()
+        if selected_knowledge and (selected_knowledge.state=='queued' or parallel):
             from .models import WorkerRun
             run=WorkerRun.objects.filter(batch=selected,state__in=('claimed','preparing','running','paused')).first()
             if run or selected.status=='waiting':
-                pending_knowledge=selected_knowledge;selected_knowledge=None
+                pending_knowledge=selected_knowledge;pending_knowledge.parallel=parallel;selected_knowledge=None
     expand_batches=bool(query or state or (selected_id and selected and any(item.pk==selected.pk for item in visible[3:])))
     preview=[]
     if selected and hasattr(selected,'worker_run'):

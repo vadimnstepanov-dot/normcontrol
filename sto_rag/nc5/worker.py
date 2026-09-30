@@ -41,6 +41,9 @@ def runtime_config(remote):
         local['endpoint']=remote['endpoint']
     return local
 
+def probe_required(active,model_ok,last_probe,now):
+    return now-last_probe>=15 and (not active or not model_ok)
+
 def run(url):
     with Lease(DATA/'bridge.lock'):_run(url)
 
@@ -67,9 +70,11 @@ def _run(url):
     while True:
         try:
             active=any(j['state'] in ('running','preparing') for j in engine.store.jobs())
-            if time.time()-last_probe>=15:
+            if probe_required(active,model_ok,last_probe,time.time()):
+                engine.client.http('/health',timeout=3)
                 engine.client.probe();model_ok=True;last_probe=time.time()
-            request('/worker/ping/',{'worker':name,'state':('busy' if active else 'idle') if model_ok else 'error','rag':rag})
+            coordinated=not active or all(engine.store.job(j['id'])['data']['options'].get('pipeline_id') for j in engine.store.jobs() if j['state'] in ('running','preparing'))
+            request('/worker/ping/',{'worker':name,'state':('busy' if active else 'idle') if model_ok else 'error','rag':rag,'pipeline_version':'pipeline-v1' if coordinated else None})
             if state is None:
                 if active:time.sleep(5);continue
                 settings=request('/worker/config/')
@@ -79,7 +84,7 @@ def _run(url):
                 from .model import Client
                 engine.client=Client(engine.config);engine.client.probe()
                 review_feedback(request('/worker/feedback/',{'worker':name})['feedback'])
-                claim=request('/worker/claim/',{'worker':name,'features':['check-log-v1']})
+                claim=request('/worker/claim/',{'worker':name,'features':['check-log-v1','pipeline-v1']})
                 if not claim['job']:time.sleep(5);continue
                 state={'claim':claim,'lease':claim['lease'],'sequence':0};write(state_path,state)
             if not state.get('job'):
@@ -98,10 +103,16 @@ def _run(url):
                     options={f'check_{k}':k in claim['checks'] for k in ('language','logic','sto')}
                     options['reuse_cache']=not claim.get('fresh_review',False)
                     options['logging_enabled']=claim.get('logging_enabled',False)
+                    if claim.get('pipeline_version')=='pipeline-v1':
+                        options['pipeline_id']=claim['job'];options['pipeline_directions']=claim['pipeline_directions']
                     options['formatting']='xml' if 'formatting' in claim['checks'] else 'off'
                     jid=engine.create(paths,options,owner='remote:'+claim['owner']);d=engine.store.job(jid)['data'];d['remote_lease']=claim['lease'];engine.store.update(jid,data=d)
                 state['job']=jid;write(state_path,state)
             jid=state['job'];status=engine.status(jid)
+            if state['claim'].get('pipeline_version')=='pipeline-v1':
+                from pipeline import host
+                status['pipeline']=host().status(state['claim']['job'])
+                status['pipeline_resources']=host().resources(state['claim']['job'])
             if (started!=jid or not engine.thread or not engine.thread.is_alive()) and status['state'] in ('preparing','running'):
                 engine.start(jid);started=jid
             state['sequence']+=1;write(state_path,state)

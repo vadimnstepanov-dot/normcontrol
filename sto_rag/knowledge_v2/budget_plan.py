@@ -1,5 +1,5 @@
 """Compare complete-document packing with grouped exhaustive section passes."""
-from .store import checksum
+from .store import checksum,encode
 from .performance import measured
 from bisect import bisect_left
 
@@ -21,6 +21,8 @@ def plan(rows,blocks,client,scope,max_group=8):
     def count(group,evidence):
         key=(tuple(r['id'] for r in group),tuple(b['id'] for b in evidence))
         if key in fit_cache:return fit_cache[key]
+        probe=getattr(client,'on_plan_probe',None)
+        if probe:probe()
         measured=dict(scope,part=999999,parts=999999,submitted_ids=[b['id'] for b in evidence],full_text=False)
         fit_cache[key]=client.count(request(group,evidence,measured))
         return fit_cache[key]
@@ -37,7 +39,7 @@ def plan(rows,blocks,client,scope,max_group=8):
         if fits(group,blocks):
             complete=dict(scope,part=0,parts=1,submitted_ids=[b['id'] for b in blocks],full_text=True)
             packet=request(group,blocks,complete)
-            return [dict(id=checksum(packet),payload=packet)],[]
+            if client.count(packet)<=budget:return [dict(id=checksum(packet),payload=packet)],[]
         if not fits(group,[]):
             if len(group)==1:return [],list(group)
             mid=len(group)//2;left,lf=build(group[:mid]);right,rf=build(group[mid:]);return left+right,lf+rf
@@ -51,38 +53,31 @@ def plan(rows,blocks,client,scope,max_group=8):
             low_tokens=count(group,[]);high_tokens=count(group,blocks[start:high])
             if high_tokens<=budget:end=high
             else:
-                slow_probes=0;bisect_mode=False
                 while high-end>1:
-                    # Text weights omit shared table/section metadata. Near a
-                    # metadata jump interpolation can crawl one block at a
-                    # time, sending hundreds of exact tokenizer requests.
-                    # Preserve fast interpolation near a measured boundary.
-                    # Real-document probes usually finish well within eight
-                    # refinements. Fall back only after eight consecutive
-                    # probes fail to remove at least a quarter of the range.
-                    if slow_probes>=8:bisect_mode=True
-                    width=high-end
-                    if not bisect_mode:
-                        fraction=max(.01,min(.99,(budget-low_tokens)/max(1,high_tokens-low_tokens)))
-                        target=weights[end]+fraction*(weights[high]-weights[end])
-                        mid=max(end+1,min(high-1,bisect_left(weights,target,end+1,high)))
-                    else:mid=(end+high)//2
+                    fraction=max(.01,min(.99,(budget-low_tokens)/max(1,high_tokens-low_tokens)))
+                    target=weights[end]+fraction*(weights[high]-weights[end])
+                    mid=max(end+1,min(high-1,bisect_left(weights,target,end+1,high)))
                     tokens=count(group,blocks[start:mid])
                     if tokens<=budget:end=mid;low_tokens=tokens
                     else:high=mid;high_tokens=tokens
-                    slow_probes=slow_probes+1 if high-end>width*.75 else 0
             if end==start:
                 if len(group)==1:return [],list(group)
                 mid=len(group)//2;left,lf=build(group[:mid]);right,rf=build(group[mid:]);return left+right,lf+rf
             boundaries=[i for i in range(start+1,end) if blocks[i].get('headings')!=blocks[i-1].get('headings')]
             if end<len(blocks) and boundaries and boundaries[-1]>start+(end-start)//2:end=boundaries[-1]
             chunks.append(blocks[start:end]);start=end
-        batches=[]
-        for index,evidence in enumerate(chunks):
-            complete=dict(scope,part=index,parts=len(chunks),submitted_ids=[b['id'] for b in evidence],full_text=len(chunks)==1)
-            payload=request(group,evidence,complete)
-            batches.append(dict(id=checksum(payload),payload=payload))
-        return batches,[]
+        while True:
+            batches=[];repair=False
+            for index,evidence in enumerate(chunks):
+                complete=dict(scope,part=index,parts=len(chunks),submitted_ids=[b['id'] for b in evidence],full_text=len(chunks)==1)
+                payload=request(group,evidence,complete)
+                if client.count(payload)>budget:
+                    if len(evidence)>1:
+                        middle=len(evidence)//2;chunks[index:index+1]=[evidence[:middle],evidence[middle:]];repair=True;break
+                    if len(group)==1:return [],list(group)
+                    middle=len(group)//2;left,lf=build(group[:middle]);right,rf=build(group[middle:]);return left+right,lf+rf
+                batches.append(dict(id=checksum(payload),payload=payload))
+            if not repair:return batches,[]
     # Optimize all contiguous group sizes, not just the largest group and the
     # whole-document special case. Filling the context with norms can otherwise
     # leave only a few cells per request and create dozens of document passes.
@@ -90,6 +85,28 @@ def plan(rows,blocks,client,scope,max_group=8):
     # actual requests, then repeated document text. Every candidate is measured
     # with the same template/tokenizer used for inference.
     if len(ordered)<=limit and fits(ordered,blocks):return build(ordered)
+    if len(ordered)>16:
+        # Choose groups locally; measure only the selected groups. Exhaustive
+        # token probes for every overlapping group dominate large documents.
+        import math
+        batches=[];failed=[];start=0
+        document_weight=sum(len(b['text'])+40 for b in blocks)/3
+        while start<len(ordered):
+            sizes=sorted({1,min(2,limit),min(4,limit),limit,min(limit,len(ordered)-start)})
+            candidates=[]
+            for size in sizes:
+                if start+size>len(ordered):continue
+                group=ordered[start:start+size]
+                overhead=len(encode(request(group,[],scope)))/3+512
+                available=budget-overhead
+                # Estimate selects a candidate only. Exact counts in build()
+                # decide every accepted boundary and oversized obligation.
+                cost=math.ceil(document_weight/max(1,available))/size if available>0 else float('inf')
+                candidates.append((cost,-size,group))
+            group=min(candidates,key=lambda x:x[:2])[2]
+            packed,oversized=build(group)
+            batches.extend(packed);failed.extend(oversized);start+=len(group)
+        return batches,failed
     best={len(ordered):((0,0,0),[],[])}
     for start in range(len(ordered)-1,-1,-1):
         winner=None
@@ -119,7 +136,7 @@ def summary(rows,batches,oversized,docs):
     from collections import Counter
     text=sum(len(b['text']) for d in docs for b in d['blocks'])
     repeated=sum(len(b['text']) for batch in batches for b in batch['payload']['documents'])
-    return dict(strategy='minimum_calls_contiguous_groups_v5',
+    return dict(strategy='bounded_greedy_large_scopes_exact_small_scopes_v5',
         documents=[dict(id=d['id'],type=d.get('classification',{}).get('type','unknown'),blocks=len(d['blocks']),
                         text_chars=sum(len(b['text']) for b in d['blocks']),gaps=len(d.get('gaps',[]))) for d in docs],
         applicability=dict(Counter(r['applicability']['result'] for r in rows)),

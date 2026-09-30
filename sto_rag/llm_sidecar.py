@@ -344,6 +344,18 @@ def control(action,store,remembered):
         finally:lease.__exit__()
 
 
+def execute_model_command(command,store,remembered):
+    if command.get('automatic') and command.get('action')=='start':
+        # Queue wake-up must not resume any check paused by its owner or operator.
+        with Lease(DATA/'model.lock'),SleepInhibitor():
+            save_state(phase='Автоматическая загрузка LLM для очереди')
+            start_backend()
+            if not ready():raise RuntimeError('Модель не готова после автоматического запуска')
+            save_state(phase='Готово')
+        return list(remembered)
+    return control(command['action'],store,remembered)
+
+
 def main(envfile):
     url,token=credentials(envfile)
     endpoint=url+'/worker/llm/telemetry/'
@@ -401,7 +413,7 @@ def main(envfile):
                     if automatic:degradation.last_restart=time.time()
                     save_state(operation=command)
                     try:
-                        remembered=control(command['action'],store,remembered)
+                        remembered=execute_model_command(command,store,remembered)
                         degradation.restarted(time.time())
                         note='Автоперезапуск после устойчивой деградации 15%' if automatic else 'Команда '+command['action']+' выполнена'
                         success=True

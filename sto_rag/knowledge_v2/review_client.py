@@ -12,13 +12,14 @@ from .review_wire import VERSION as WIRE_VERSION, GROUPED_VERSION, TRACE_REFS_VE
 
 
 class LlamaClient:
-    def __init__(self, endpoint, context=49152, output_tokens=4096, timeout=300,store=None, *, wire_version=WIRE_VERSION):
+    def __init__(self, endpoint, context=49152, output_tokens=4096, timeout=300,store=None, *, wire_version=WIRE_VERSION,pipeline_id=None):
         if wire_version not in VERSIONS:raise ValueError('Unsupported normative transport')
         self.wire_version=wire_version
         parsed = urllib.parse.urlsplit(endpoint)
         if parsed.scheme not in ('https', 'http') or parsed.username or parsed.password:
             raise ValueError('Explicit trusted HTTP(S) model endpoint required')
         self.endpoint = endpoint.rstrip('/')
+        self.pipeline_id=pipeline_id;self.pipeline_endpoint=self.endpoint
         self.output_tokens, self.timeout = output_tokens, timeout
         self.store=store
         from .model_profile import enabled,ensure
@@ -159,10 +160,26 @@ class LlamaClient:
 
     @measured('v2.count')
     def count(self, payload):
+        if getattr(self,'pipeline_id',None) and not getattr(self,'_model_ticket',None) and checksum(payload) not in self._counts:
+            from pipeline import remote_turn
+            from .model_profile import ensure
+            with remote_turn(self,'normative_tokenize',ram_mb=64):
+                ensure(self,'text');return self._count(payload)
+        return self._count(payload)
+    def _count(self, payload):
+        if len(self._counts)>1024:self._counts.clear()
         key = checksum(payload)
         observe('v2.count_cache_hit' if key in self._counts else 'v2.count_cache_miss')
         if key not in self._counts:
             req = self.request(payload)
+            store=getattr(self,'store',None)
+            cache_key=checksum([getattr(self,'signature',None),req])
+            if store is not None and getattr(self,'signature',None):
+                with store.connection() as db:
+                    db.execute('CREATE TABLE IF NOT EXISTS token_measurements(key TEXT PRIMARY KEY,tokens INTEGER NOT NULL,created REAL NOT NULL)')
+                    saved=db.execute('SELECT tokens FROM token_measurements WHERE key=?',(cache_key,)).fetchone()
+                if saved is not None:
+                    self._counts[key]=saved['tokens'];return saved['tokens']
             template = self.http('/apply-template', {'messages': req['messages'], 'chat_template_kwargs': {'enable_thinking': False}})['prompt']
             tokens = len(self.http('/tokenize', {'content': template, 'add_special': False})['tokens'])
             schema_key=checksum(req['response_format'])
@@ -174,6 +191,14 @@ class LlamaClient:
             tokens += schema_counts[schema_key]
             if len(self._counts) > 1024: self._counts.clear()
             self._counts[key] = tokens
+            if store is not None and getattr(self,'signature',None):
+                import time
+                with store.connection() as db:
+                    db.execute('INSERT OR REPLACE INTO token_measurements VALUES(?,?,?)',(cache_key,tokens,time.time()))
+                    # Only hashes and integer counts persist, never prompt text.
+                    self._count_writes=getattr(self,'_count_writes',0)+1
+                    if self._count_writes%1000==0:
+                        db.execute('DELETE FROM token_measurements WHERE key IN (SELECT key FROM token_measurements ORDER BY created DESC LIMIT -1 OFFSET 40000)')
         return self._counts[key]
 
     @measured('v2.complete')

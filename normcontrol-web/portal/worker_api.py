@@ -75,7 +75,7 @@ def ping(request):
         if isinstance(item,dict):sources.append({k:(str(item.get(k,''))[:240] if k in ('name','sha256') else int(item.get(k,0) or 0)) for k in ('name','sha256','blocks','tables','warnings')})
     rag={'catalog':str(raw.get('catalog',''))[:64],'requirements':int(raw.get('requirements',0) or 0),'contract_version':raw.get('contract_version'),
          'unresolved_dependencies':int(raw.get('unresolved_dependencies',0) or 0),'settings':settings,'sources':sources} if raw else {}
-    WorkerPresence.objects.update_or_create(name=str(data.get('worker','local'))[:100],defaults={'state':state,'details':{'rag':rag}})
+    WorkerPresence.objects.update_or_create(name=str(data.get('worker','local'))[:100],defaults={'state':state,'details':{'rag':rag,'pipeline_version':'pipeline-v1' if data.get('pipeline_version')=='pipeline-v1' else None}})
     return JsonResponse({'ok':True})
 
 
@@ -130,16 +130,20 @@ def llm_telemetry(request):
         runtime.history=points[-120:]
         runtime.command=command
         runtime.save(update_fields=['sample','history','command','updated'])
-    pending=command if command.get('state')=='pending' else {}
-    return JsonResponse({'command':{'id':pending.get('id'),'action':pending.get('action')} if pending else None})
+    from .model_demand import command_reply
+    return JsonResponse({'command':command_reply(command)})
 
 
 @worker
 def llm_command(request):
-    runtime=LLMRuntime.objects.only('command').filter(pk=1).first()
-    command=runtime.command if runtime else {}
-    return JsonResponse({'command':{'id':command.get('id'),'action':command.get('action')}
-        if command.get('state')=='pending' else None})
+    from .model_demand import queue_start,command_reply
+    with transaction.atomic():
+        runtime,_=LLMRuntime.objects.select_for_update().get_or_create(pk=1)
+        command=queue_start(runtime)
+        if command!=runtime.command:
+            runtime.command=command
+            runtime.save(update_fields=['command','updated'])
+    return JsonResponse({'command':command_reply(command)})
 
 
 @login_required
@@ -193,18 +197,25 @@ def claim(request):
         if not run and settings.KNOWLEDGE_V2_ENABLED:
             from knowledge.models import Command
             from knowledge.launch import dependency_ready
-            if Command.objects.filter(kind='review.execute',state='delivering').exists():return JsonResponse({'job':None})
+            if Command.objects.filter(kind='review.execute',state='delivering').exclude(payload__pipeline_version='pipeline-v1').exists():return JsonResponse({'job':None})
             for c in Command.objects.filter(kind='review.execute',state='pending',payload__unified_launch=True):
-                if dependency_ready(c):return JsonResponse({'job':None})
+                if c.payload.get('pipeline_version')!='pipeline-v1' and dependency_ready(c):return JsonResponse({'job':None})
         batch=run.batch if run else Batch.objects.select_for_update().filter(status='waiting',worker_run__isnull=True,archived=False).order_by('queue_position','created','pk').first()
         if not batch:return JsonResponse({'job':None})
         if batch.logging_enabled and 'check-log-v1' not in features:return JsonResponse({'job':None,'reason':'check_log_worker_upgrade_required'})
         if not run:run=WorkerRun.objects.create(batch=batch,worker=name)
         checks=batch.checks
+        pipeline={}
+        if 'pipeline-v1' in features:
+            unified=False
+            if settings.KNOWLEDGE_V2_ENABLED:
+                from knowledge.models import Command
+                unified=Command.objects.filter(kind='review.execute',payload__batch_id=str(batch.pk),payload__pipeline_version='pipeline-v1').exists()
+            if unified or 'sto' not in checks:pipeline={'pipeline_version':'pipeline-v1','pipeline_directions':checks}
         if settings.KNOWLEDGE_V2_ENABLED:
             # V2 owns STO: never silently substitute the legacy catalog.
             checks=[x for x in checks if x!='sto']
-        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'logging_enabled':batch.logging_enabled,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
+        return JsonResponse({'job':str(batch.pk),'lease':str(run.lease),'owner':str(batch.owner_id),'checks':checks,'fresh_review':batch.fresh_review,'logging_enabled':batch.logging_enabled,**pipeline,'files':[{'id':d.id,'name':d.name,'sha256':d.sha256,'size':d.size} for d in batch.documents.all()]})
 
 @worker
 @require_POST
@@ -264,6 +275,10 @@ def status(request,pk):
     try:run=WorkerRun.objects.get(batch=batch) if include_findings else WorkerRun.objects.defer('report').get(batch=batch)
     except WorkerRun.DoesNotExist:return JsonResponse({'state':batch.status,'snapshot':{},'report_available':False,'stale':False,'dispositions':{}})
     snapshot=dict(run.snapshot or {})
+    if snapshot.get('pipeline') and settings.KNOWLEDGE_V2_ENABLED:
+        from knowledge.models import KnowledgeCheck
+        normative=KnowledgeCheck.objects.filter(batch=batch).order_by('-created').first()
+        if normative:snapshot['pipeline_normative']={'state':normative.state,'progress':normative.progress}
     if include_findings and not snapshot.get('task_errors'):
         snapshot['task_errors']=[{'id':x.get('id','legacy-error'),'stage':x.get('stage','system'),'state':'failed','attempts':0,'error':x.get('error') or 'Причина не записана'} for x in run.report.get('tasks',[]) if x.get('state')=='failed'][:50]
     result={'state':run.state,'snapshot':snapshot,'report_available':bool(run.local_id),'heartbeat':run.heartbeat.isoformat(),'stale':(timezone.now()-run.heartbeat).total_seconds()>120,

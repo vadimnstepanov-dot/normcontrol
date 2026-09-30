@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-wri
     && pip install --no-cache-dir pypdf==6.10.0 pdfplumber==0.11.7 Pillow==11.3.0 opencv-python-headless==4.12.0.88 numpy==2.2.6 \
     && useradd --uid 65532 --create-home app && mkdir -p /data && chown app:app /data
 COPY sto_rag/knowledge_v2 /app/sto_rag/knowledge_v2
+COPY sto_rag/pipeline.py /app/sto_rag/pipeline.py
 USER app
 ENV NORMCONTROL_KNOWLEDGE_DATA=/data
 STOPSIGNAL SIGTERM

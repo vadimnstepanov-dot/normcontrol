@@ -18,6 +18,7 @@ def main():
         commands = [
             ([sys.executable, '-m', 'unittest', 'discover', '-s', 'sto_rag/nc5/tests'], ROOT),
             ([sys.executable, '-m', 'unittest', 'discover', '-s', 'sto_rag/knowledge_v2/tests', '-t', 'sto_rag'], ROOT),
+            ([sys.executable, '-m', 'unittest', 'discover', '-s', 'sto_rag/tests'], ROOT),
             ([sys.executable, 'manage.py', 'test', 'portal', 'knowledge', '--noinput'], ROOT/'normcontrol-web'),
         ]
         for command, directory in commands:

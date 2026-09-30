@@ -23,6 +23,7 @@ class LRU:
             value = self.items.pop(key); self.items[key] = value
             return json.loads(value)
     def put(self, key, value):
+        if self.limit<=0:return
         raw = dumps(value).encode()
         with self.lock:
             self.size -= len(self.items.pop(key, b''))

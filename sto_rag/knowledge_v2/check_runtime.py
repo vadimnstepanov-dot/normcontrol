@@ -13,9 +13,22 @@ from .store import checksum,Conflict,NotReady
 
 from .check_log import logged,emit
 
+class PreparationPaused(Exception):pass
+
 @profiled('v2')
 @logged
 def execute(bridge,claim,download,client=None,experience_index=None):
+    try:return _execute(bridge,claim,download,client,experience_index)
+    except PreparationPaused:
+        payload=claim['payload'];store=bridge.store
+        with store.connection() as db:
+            if db.execute("SELECT 1 FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone():raise
+        result=dict(kind='review.execute.done',set_id=payload['set_id'],job_id=payload['job_id'],
+            task_id=None,state='paused',finding_count=0,findings_digest=checksum([]),
+            limitations=['Планирование остановлено пользователем до сохранения плана.'])
+        return store.remember_result(claim['command_id'],'review.execute',payload,result)
+
+def _execute(bridge,claim,download,client=None,experience_index=None):
     payload=claim['payload'];store=bridge.store
     if checksum(payload['snapshot'])!=payload['snapshot_digest']:raise Conflict('Portal snapshot digest')
     def preparing(stage,operation,**details):
@@ -37,7 +50,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
     if payload.get('experience_release_id'):
         manifest,_=release_records(store,payload['experience_release_id'],authorize)
         if manifest['set_id']!=payload['experience_set_id']:raise Conflict('Experience release changed')
-    model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store)
+    pipeline=payload.get('batch_id') if payload.get('pipeline_version')=='pipeline-v1' else None
     with tempfile.TemporaryDirectory(prefix='knowledge-check-') as temporary:
         preparing('download','Получение документов и проверка контрольных сумм')
         paths=[]
@@ -57,7 +70,35 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             if size!=declared['size'] or digest.hexdigest()!=declared['sha256']:raise Conflict('Document revision changed')
             paths.append(path)
         preparing('parse','Чтение структуры, текста и таблиц')
-        docs=corpus(paths)
+        if pipeline:
+            import os,urllib.request
+            endpoint=os.environ['NORMCONTROL_LLM_ENDPOINT'].rstrip('/')
+            headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('NORMCONTROL_LLM_API_KEY','')}
+            def shared_request(route,value):
+                req=urllib.request.Request(endpoint+route,data=json.dumps({'pipeline':pipeline,**value}).encode(),headers=headers)
+                with urllib.request.urlopen(req,timeout=15) as response:return json.load(response)
+            deadline=time.monotonic()+600
+            while True:
+                artifact=shared_request('/pipeline/artifact',{'metadata':True})
+                if artifact.get('ready'):break
+                statuses=shared_request('/pipeline/status',{})['phases']
+                if any(p['state'] in ('failed','paused') for p in statuses if p['stage'] in ('material','normative_prepare')):raise NotReady('Shared preparation is unavailable')
+                if preparing('parse','Общая подготовка документов на CPU') or bridge.stop_event.is_set():raise PreparationPaused()
+                if time.monotonic()>deadline:raise TimeoutError('Shared preparation timeout')
+                time.sleep(2)
+            from types import SimpleNamespace
+            from pipeline import remote_turn
+            admission=SimpleNamespace(pipeline_id=pipeline,pipeline_endpoint=endpoint,timeout=300)
+            reserve=max(512,256+int(artifact['bytes'])*6//1048576)
+            with remote_turn(admission,'normative_material','cpu',ram_mb=reserve):
+                artifact=shared_request('/pipeline/artifact',{})
+                if artifact.get('version')!='pipeline-v1' or artifact.get('pipeline')!=pipeline:raise Conflict('Shared preparation version differs')
+                lookup={d['sha256']:d for d in artifact['documents']}
+                if set(lookup)!={d['sha256'] for d in payload['documents']}:raise Conflict('Shared corpus source identity differs')
+                docs=[lookup[d['sha256']] for d in payload['documents']]
+            shared_request('/pipeline/phase',{'stage':'normative','state':'running'})
+        else:docs=corpus(paths)
+        model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store,**({'pipeline_id':pipeline} if pipeline else {}))
         visual_enabled=payload.get('visual_version')=='visual-tail-v1'
         if visual_enabled:
             from .visual_tail import prepare
@@ -152,10 +193,10 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         include_candidates=(bool(old_plan[0]) if old_plan else
             __import__('os').getenv('KNOWLEDGE_INCLUDE_NORMATIVE_CANDIDATES','0')=='1')
         trace_links=links_for(store,[r['release_id'] for r in selected],authorize,include_candidates=include_candidates) if trace_enabled else []
-        from .model_queue import model_turn
+        from .model_queue import planning_turn as model_turn
         from .model_profile import ensure
         with model_turn(store,model):
-            ensure(model,'text')
+            if not pipeline:ensure(model,'text')
             trace_batches,_=trace_plan(trace_links,docs,facts,verify_fact,model) if trace_enabled else ([],[])
         trace_total=len(trace_batches)
         visual_total=0;visual_result=None;visual_batches=[];visual_unplanned=[]
@@ -163,8 +204,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         progress_floor=0
         def progress(task_id,completed,total,decisions=None):
             if completed:milestone('first_completed_batch_seconds')
-            if any(d.get('outcome')=='violated' for d in (decisions or [])):
-                milestone('first_violation_preview_seconds')
+            if any(d.get('outcome')=='violated' for d in (decisions or [])):milestone('first_violation_preview_seconds')
             from .check_log import active
             journal=active.get()
             if journal:
@@ -178,20 +218,34 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                 job_id=payload['job_id'],progress=dict(task_id=task_id,completed=completed,total=total+trace_total+visual_total,
                     percent=round(completed/max(1,total+trace_total+visual_total)*100,1),
                     eta_seconds=(round((time.monotonic()-started)/(completed-previous_completed)*max(0,total+trace_total+visual_total-completed)) if completed>previous_completed else previous_eta),
-                    preview=preview,**({'stage':phase,'visual_total':visual_total} if visual_enabled else {}))))
+                    preview=preview,**({'stage':'vision' if phase=='waiting_native' else phase,'visual_total':visual_total} if visual_enabled else {}),
+                    **({'operation':'Ожидание завершения текстовых проверок'} if phase=='waiting_native' else {}))))
             paused=response.get('pause_requested') is True or bridge.stop_event.is_set()
             if journal and not paused:
                 try:journal.deliver(bridge,claim,max_chunks=1)
                 except Exception:journal.append('log_delivery_error',dict(message='Будет повторено из сохранённого журнала'))
             return paused
         runner=ReviewRunner(store,model,authorize,owner=payload['actor_id'],experience_selector=selector,on_checkpoint=progress)
-        from .model_queue import model_turn
+        from .model_queue import planning_turn as model_turn
         with model_turn(store,model):
             from .model_profile import ensure
-            ensure(model,'text')
+            if not pipeline:ensure(model,'text')
             preparing('plan','Подбор требований и точный расчёт пакетов по контекстному окну')
-            task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
-                experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [],template_comparison=template_comparison,include_candidates=include_candidates)
+            probes=0;last_probe=0
+            def plan_probe():
+                nonlocal probes,last_probe
+                probes+=1
+                if bridge.stop_event.is_set():raise PreparationPaused()
+                if time.monotonic()-last_probe<10:return
+                last_probe=time.monotonic()
+                if preparing('plan',f'Подбор пакетов: проверено вариантов — {probes}'):
+                    raise PreparationPaused()
+            previous_probe=getattr(model,'on_plan_probe',None)
+            model.on_plan_probe=plan_probe
+            try:
+                task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
+                    experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [],template_comparison=template_comparison,include_candidates=include_candidates)
+            finally:model.on_plan_probe=previous_probe
             with store.connection() as db:
                 planned=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
             from .check_log import compact_plan
@@ -234,16 +288,31 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             state='completed'
         else:state='partial'
         if state=='completed' and report.get('normative_selection'):state='partial'
+        if pipeline:
+            for stage in ('normative','verify_normative'):shared_request('/pipeline/phase',{'stage':stage,'state':'paused' if state=='paused' else 'done'})
         if trace_enabled and state!='paused':
             phase='trace'
+            if pipeline:model.pipeline_stage='trace';shared_request('/pipeline/phase',{'stage':'trace','state':'running'})
             n=report['progress']['completed'];norm_total=report['progress']['total']
             def trace_progress(done,total):return progress(task_id,n+done,norm_total)
             trace_report=trace_run(store,payload['job_id'],trace_links,docs,facts,verify_fact,model,authorize,trace_progress)
             if trace_report['state']=='paused':state='paused'
             elif trace_report['counts'].get('unknown') or trace_report['errors']:state='partial'
             if state!='paused':progress(task_id,n+trace_total,norm_total)
+        if pipeline:shared_request('/pipeline/phase',{'stage':'trace','state':'paused' if state=='paused' else 'done'})
+        if pipeline and visual_enabled and visual_batches and state!='paused':
+            # The native job pins the text profile. Wait without holding RAM/GPU
+            # tickets before loading Vision; text work and CPU prep still overlap.
+            phase='waiting_native'
+            while True:
+                phases={p['stage']:p['state'] for p in shared_request('/pipeline/status',{})['phases']}
+                if phases.get('verify_native')=='done':break
+                if phases.get('verify_native') in ('failed','paused') or progress(task_id,report['progress']['completed']+trace_total,report['progress']['total']):
+                    state='paused';break
+                time.sleep(5)
         if visual_enabled and state!='paused' and visual_batches:
             phase='vision'
+            if pipeline:model.pipeline_stage='vision';shared_request('/pipeline/phase',{'stage':'vision','state':'running'})
             from .visual_tail import run
             base_done=report['progress']['completed']+trace_total
             norm_total=report['progress']['total']
@@ -253,6 +322,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             if visual_result['state']=='paused':state='paused'
             elif visual_result.get('failures') or visual_unplanned:state='partial'
         if visual_enabled and visual_unplanned and state!='paused':state='partial'
+        if pipeline:shared_request('/pipeline/phase',{'stage':'vision','state':'paused' if state=='paused' else 'done'})
         findings=[] if state=='paused' else [d for d in report['decisions'] if d['state'] in ('violated','unknown')]
         if state!='paused':findings.extend(report.get('scope_findings',[]))
         if visual_result and state!='paused':

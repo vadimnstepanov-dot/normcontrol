@@ -1,5 +1,6 @@
 **
 !sto_rag/
+!sto_rag/pipeline.py
 !sto_rag/knowledge_v2/
 !sto_rag/knowledge_v2/**
 **/__pycache__/**
