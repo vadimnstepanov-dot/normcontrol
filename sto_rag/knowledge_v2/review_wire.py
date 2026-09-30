@@ -3,6 +3,10 @@ import json
 from .store import checksum,encode
 
 VERSION='normative-wire-v5'
+GROUPED_VERSION='normative-wire-v6'
+TRACE_REFS_VERSION='normative-wire-v7'
+TRACE_COMPACT_VERSION='normative-wire-v8'
+VERSIONS={VERSION,GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION}
 POLICY='''Представление transport использует справочники без сокращения текста.
 documents — строки с колонками document_columns; id строки является block_id для
 цитаты. structure_ref раскрывается в document_structures: там документ, заголовки,
@@ -31,7 +35,8 @@ class Pool:
             alias=self.prefix+str(len(self.items)+1);self.keys[key]=alias;self.items[alias]=value
         return self.keys[key]
 
-def payload(original):
+def payload(original, *, version=VERSION):
+    if version not in VERSIONS:raise ValueError('Unsupported normative transport')
     rows=original.get('obligations',[])
     if not rows:return original,Identities()
     value=json.loads(encode(original));ids=[r['id'] for r in rows]
@@ -105,13 +110,23 @@ def payload(original):
             for key in ('document','locator','location'):evidence.pop(key,None)
     # Stable normative/document prefix lets check/verify share the same input.
     # Unlike canonical hashing, transport serialization preserves this order.
-    result=dict(transport=VERSION,normative_structures=norm_structures.items,normative_contexts=contexts.items,
+    if version in (GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION) and 'gaps' in scope:
+        from .gap_wire import pack
+        scope['gaps']=pack(scope['gaps'])
+    trace_citations={};document_names={}
+    if version==TRACE_COMPACT_VERSION:
+        from .trace_wire import compact_links,compact_document_names
+        trace_citations=compact_links(value['obligations'],sources)
+        document_names=compact_document_names(doc_structures.items)
+    result=dict(transport=version,normative_structures=norm_structures.items,normative_contexts=contexts.items,
         obligations=value['obligations'],document_structures=doc_structures.items,document_headers=headers.items,
         applicability_contexts=applicability.items,sources=sources.items,
         document_columns=['id','text','structure_ref','locator','row','header_ref'],documents=packed)
     result.update({k:v for k,v in value.items() if k not in ('obligations','documents','stage','proposed')})
     if 'stage' in value:result['stage']=value['stage']
     if 'proposed' in value:result['proposed']=value['proposed']
+    if trace_citations:result['trace_citations']=trace_citations
+    if document_names:result['document_names']=document_names
     return result,Identities({alias:rid for rid,alias in aliases.items()},blocks={alias:rid for rid,alias in blocks.items()})
 
 def serialize(value):

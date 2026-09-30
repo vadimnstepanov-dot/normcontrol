@@ -55,6 +55,12 @@ def route_finding(item,stage):
     if reference:item['reference_defect']=True
     objective=re.search(r'(?:грамматическ|орфографическ|пунктуационн).*ошибк|опечатк|нарушен[аоыие]*\s+согласовани[ея]|согласовани[ея]\s+(?:числа|подлежащ)|лишняя запятая|пропущен[ао]?\s+(?:буква|предлог|скобка|запятая)|незаверш[её]нн[а-я]+\s+(?:фраз|предложени)|оборванн[а-я]+\s+(?:фраз|предложени)',item.get('issue','')+' '+item.get('explanation',''),re.I)
     objective=objective or re.search(r'обрыв\s+фразы|(?:неверн|нарушен)[а-яё]*\s+управлени|(?:отсутствует|пропущена)\s+(?:закрывающая\s+)?(?:кавычка|скобка|точка)|неверное написание',claim,re.I)
+    # A missing sentence member is a local syntax hypothesis even when a logic
+    # task discovers it. Routing it as document absence demands irrelevant scope.
+    local_syntax=(re.search(r'грамматически\s+неполн[а-яё]*\s+(?:фраз|предложени)|(?:фраз|предложени)[^.]{0,70}грамматически\s+неполн',claim,re.I)
+                  or (re.search(r'(?:отсутствует|пропущен[ао]?)\s+(?:существительное|сказуемое|подлежащее|однородный\s+член)',claim,re.I)
+                      and re.search(r'после\s+союза|грамматическ|синтаксическ',claim,re.I)))
+    objective=objective or local_syntax
     if reference and not item.get('requirement_id'):item['category']='межраздельная логика'
     elif stage=='language' or (objective and not item.get('requirement_id')):item['category']='грамотность'
     if (objective or reference) and item.get('kind')=='style':

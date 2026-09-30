@@ -88,4 +88,34 @@ class EvidenceContextTests(unittest.TestCase):
             self.assertEqual(a,b)
             self.assertNotEqual(a,store.finding(jid,{**f,'issue':'Ошибка в грамматике подписи'}))
 
+    def test_logic_discovered_sentence_gap_does_not_require_document_scope(self):
+        b=block('p1','Создание и объектов в системе.')
+        f={'category':'техническая логика','kind':'violation',
+           'issue':'Неполное описание входной информации',
+           'explanation':'В описании отсутствует существительное после союза «и», что делает фразу грамматически неполной.',
+           'evidence':[{'document':'d','locator':'p1','quote':b['text']}]}
+        result=validate_finding(route_finding(f,'cross'),[{'id':'d','blocks':[b]}],{})
+        self.assertEqual(result['category'],'грамотность')
+        self.assertFalse(result.get('needs_full_scope'))
+        self.assertEqual(result['kind'],'violation')  # Still a candidate, not a verdict.
+
+    def test_missing_project_scope_is_not_relabelled_as_local_syntax(self):
+        b=block('p1','Функция должна обеспечивать обмен данными.')
+        f={'category':'техническая логика','kind':'violation',
+           'issue':'В разделе отсутствует описание состава передаваемых объектов',
+           'explanation':'Не определён перечень объектов обмена.',
+           'evidence':[{'document':'d','locator':'p1','quote':b['text']}]}
+        result=validate_finding(route_finding(f,'cross'),[{'id':'d','blocks':[b]}],{})
+        self.assertEqual(result['category'],'техническая логика')
+        self.assertTrue(result.get('needs_full_scope'))
+
+    def test_syntax_routing_does_not_waive_separate_section_absence(self):
+        b=block('p1','Создание и объектов в системе.')
+        f={'category':'техническая логика','kind':'violation',
+           'issue':'Грамматически неполная фраза; отсутствует раздел требований',
+           'explanation':'Отсутствует существительное после союза «и».',
+           'evidence':[{'document':'d','locator':'p1','quote':b['text']}]}
+        result=validate_finding(route_finding(f,'cross'),[{'id':'d','blocks':[b]}],{})
+        self.assertTrue(result.get('needs_full_scope'))
+
 if __name__=='__main__':unittest.main()

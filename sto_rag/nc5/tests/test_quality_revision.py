@@ -56,7 +56,7 @@ class QualityRevision(unittest.TestCase):
             return {'choices':[{'finish_reason':'length' if len(requests)==1 else 'stop','message':{'content':json.dumps({k:[] for k in ('findings','facts','coverage','decisions','limitations')})}}], 'usage':{'completion_tokens':10}, 'timings':{'predicted_n':10,'predicted_ms':100}}
         c.http=http
         with tempfile.TemporaryDirectory() as tmp, patch('nc5.common.DATA',Path(tmp)):
-            _,metrics=c.generate({'stage':'logic','blocks':[{'document':'d','locator':'p1','text':'Исходный раздел'}]})
+            _,metrics=c.generate({'stage':'cross','blocks':[{'document':'d','locator':'p1','text':'Исходный раздел'}]})
         self.assertEqual([r['max_tokens'] for r in requests],[2048,4096])
         self.assertEqual(metrics['usage']['completion_tokens'],20)
         self.assertEqual(metrics['timings']['predicted_n'],20)
@@ -67,8 +67,39 @@ class QualityRevision(unittest.TestCase):
         calls=[]
         c.http=lambda *a: calls.append(a) or {'choices':[{'finish_reason':'length','message':{'content':''}}]}
         with tempfile.TemporaryDirectory() as tmp, patch('nc5.common.DATA',Path(tmp)):
-            with self.assertRaises(OutputError):c.generate({'stage':'logic'})
+            with self.assertRaises(OutputError):c.generate({'stage':'cross'})
         self.assertEqual(len(calls),1)
+
+    def test_logic_answer_over_2048_finishes_without_repeating_source(self):
+        c=Client({**config(),'output':4096});c.count=lambda p:100
+        calls=[]
+        empty={k:[] for k in ('findings','facts','coverage','decisions','limitations')}
+        def http(path,req):
+            calls.append(req)
+            complete=req['max_tokens']>=2800
+            return {'choices':[{'finish_reason':'stop' if complete else 'length',
+                'message':{'content':json.dumps(empty) if complete else '{'}}],
+                'usage':{'completion_tokens':2800 if complete else req['max_tokens']}}
+        c.http=http
+        blocks=[{'document':'d','locator':'p1','text':'Исходное требование со всеми условиями'}]
+        with tempfile.TemporaryDirectory() as tmp,patch('nc5.common.DATA',Path(tmp)):
+            _,metrics=c.generate({'stage':'logic','blocks':blocks})
+        self.assertEqual(len(calls),1)
+        self.assertEqual(metrics['usage']['completion_tokens'],2800)
+        self.assertEqual(json.loads(calls[0]['messages'][1]['content'])['blocks'],blocks)
+
+    def test_logic_length_at_ceiling_remains_incomplete_with_one_attempt(self):
+        c=Client({**config(),'output':4096});c.count=lambda p:100
+        calls=[]
+        def http(path,req):
+            calls.append(req)
+            return {'choices':[{'finish_reason':'length','message':{'content':'{'}}],
+                    'usage':{'completion_tokens':4096}}
+        c.http=http
+        with tempfile.TemporaryDirectory() as tmp,patch('nc5.common.DATA',Path(tmp)):
+            with self.assertRaises(OutputError) as caught:c.generate({'stage':'logic'})
+        self.assertEqual(len(calls),1)
+        self.assertEqual(caught.exception.metrics['usage']['completion_tokens'],4096)
 
     def test_general_front_matter_is_not_limited_to_keyword_hits(self):
         blocks=[{'document':'d','locator':f'p{i}','section':'','text':f'Организация {i}'} for i in range(25)]

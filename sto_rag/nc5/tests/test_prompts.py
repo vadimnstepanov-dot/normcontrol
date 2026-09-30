@@ -43,9 +43,13 @@ class PromptContracts(unittest.TestCase):
     def test_stage_output_budgets_leave_room_for_larger_batches(self):
         cfg=dict(DEFAULT_CONFIG)
         self.assertEqual(output_budget(cfg,{'stage':'language'}),1024)
-        self.assertEqual(output_budget(cfg,{'stage':'logic'}),2048)
+        self.assertEqual(output_budget(cfg,{'stage':'logic'}),4096)
         self.assertEqual(output_budget(cfg,{'stage':'sto'}),1792)
         self.assertEqual(output_budget(cfg,{'stage':'verify'}),1280)
+
+    def test_logic_budget_still_respects_configured_output_ceiling(self):
+        cfg={**DEFAULT_CONFIG,'output':1536}
+        self.assertEqual(output_budget(cfg,{'stage':'logic'}),1536)
 
 
 if __name__ == '__main__':

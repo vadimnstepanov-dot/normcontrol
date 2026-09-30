@@ -85,3 +85,31 @@ class PlanningTests(unittest.TestCase):
         batches,failed=plan(rows,blocks,model,scope)
         self.assertFalse(failed);self.assertEqual(len(batches),best)
         self.assert_coverage(rows,blocks,scope,model,batches,failed)
+
+    def test_metadata_jump_has_bounded_boundary_probes(self):
+        # A shared context can be large even when its source text is short.
+        # Interpolation alone approaches this discontinuity one block at a time.
+        rows,blocks,scope=self.inputs([100],size=1000)
+        for block in blocks:block['text']='x'
+        class MetadataBudget(Budget):
+            context=5000
+            calls=0
+            def count(self,p):
+                self.calls+=1
+                return 200+(4000 if any(b['id']=='b0' for b in p['documents']) else len(p['documents']))
+        model=MetadataBudget();batches,failed=plan(rows,blocks,model,scope)
+        self.assertEqual(failed,rows)
+        self.assertFalse(batches)
+        self.assertLessEqual(model.calls,24)
+
+    def test_metadata_jump_preserves_exact_scope_and_maximal_boundary(self):
+        rows,blocks,scope=self.inputs([100],size=1000)
+        for block in blocks:block['text']='x';block['headings']=['One section']
+        class MetadataBudget(Budget):
+            context=5000
+            def count(self,p):
+                return 200+len(p['documents'])+(3200 if any(b['id']=='b0' for b in p['documents']) else 0)
+        model=MetadataBudget();batches,failed=plan(rows,blocks,model,scope)
+        self.assertFalse(failed)
+        self.assertEqual([len(b['payload']['documents']) for b in batches],[576,424])
+        self.assert_coverage(rows,blocks,scope,model,batches,failed)

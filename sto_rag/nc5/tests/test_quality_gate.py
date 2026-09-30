@@ -4,6 +4,58 @@ from nc5.quality_gate import assess
 
 
 class QualityGateTests(unittest.TestCase):
+    def test_context_words_do_not_hide_invalid_preposition_rule(self):
+        for prep,qualifier,case in [('в',' в данном контексте','творительного'),('через','','творительного'),('согласно',' здесь','родительного')]:
+            f={'category':'грамотность','issue':'Падеж','explanation':f'Предлог «{prep}»{qualifier} требует {case} падежа.',
+               'evidence':[{'quote':'Проверяемый фрагмент'}]}
+            self.assertEqual(assess(f)[0],'question')
+        for case in ['винительного','предложного']:
+            f['explanation']=f'Предлог «в» в данном контексте требует {case} падежа.'
+            self.assertIsNone(assess(f)[0])
+
+    def test_identical_edit_cannot_serve_as_confirmed_textual_correction(self):
+        f={'category':'грамотность','issue':'Опечатка','explanation':'Неверное слово.',
+           'evidence':[{'quote':'Кредиторская задолженность краткосрочная'}],
+           'suggestion':'Заменить «Кредиторская задолженность краткосрочная» на «Кредиторская задолженность краткосрочная».'}
+        self.assertEqual(assess(f)[0],'question')
+        self.assertEqual(assess({**f,'suggestion':f['evidence'][0]['quote']})[0],'question')
+        self.assertIsNone(assess({**f,'suggestion':'Заменить «задолженность» на «задолженность» и восстановить ссылку.'})[0])
+        self.assertIsNone(assess({**f,'requirement_id':'explicit-rule'})[0])
+
+    def test_typographic_and_mixed_alphabet_edits_are_not_noops(self):
+        for original,changed in [('данные  системы','данные системы'),('StarRoсks','StarRocks'),('данные системы','данные, системы')]:
+            f={'category':'грамотность','issue':'Опечатка','explanation':'Исправление знаков.',
+               'evidence':[{'quote':original}], 'suggestion':f'Заменить «{original}» на «{changed}».'}
+            self.assertIsNone(assess(f)[0])
+
+    def test_verifier_cannot_invent_case_of_quoted_word(self):
+        f={'issue':'Нарушение согласования причастия','explanation':'Существительное «информация» (женский род, винительный падеж) требует согласования.',
+           'evidence':[{'quote':'информация составляющую коммерческую тайну'}]}
+        self.assertEqual(assess(f)[0],'question')
+        self.assertIsNone(assess({**f,'explanation':'Существительное «информацию» (женский род, винительный падеж) требует согласования.'})[0])
+
+    def test_genitive_after_v_is_not_valid_verifier_reason(self):
+        f={'issue':'Нарушение управления','explanation':'Сочетание требует предлога «в» + родительный падеж.',
+           'evidence':[{'quote':'потребность в развитии'}]}
+        self.assertEqual(assess(f)[0],'question')
+
+    def test_stylistic_term_repetition_is_not_a_confirmed_error(self):
+        f={'category':'грамотность','issue':'Тавтология','explanation':'Слово «системы» повторяется дважды.',
+           'evidence':[{'quote':'адаптация интерфейса системы для повышения эргономичности системы;'}]}
+        self.assertEqual(assess(f)[0],'style')
+        self.assertIsNone(assess({**f,'requirement_id':'explicit-rule'})[0])
+        self.assertIsNone(assess({**f,'evidence':[{'quote':'Данные данные передаются.'}]})[0])
+
+    def test_zero_ending_genitive_plural_is_not_replaced_by_people(self):
+        for original,replacement in [('аналитик','аналитиков'),('политик','политиков')]:
+            f={'category':'грамотность','issue':'Нарушение управления (падеж)',
+               'explanation':f'Требуется родительный падеж множественного числа («{replacement}»), а в тексте использовано «{original}».',
+               'evidence':[{'quote':f'для подготовки {original}'}]}
+            self.assertEqual(assess(f)[0],'question')
+        wrong={**f,'explanation':'Требуется родительный падеж множественного числа, а использовано «политиками».',
+               'evidence':[{'quote':'для подготовки политиками'}]}
+        self.assertIsNone(assess(wrong)[0])
+
     def test_explicit_template_rule_cannot_be_dismissed_by_similarity(self):
         from nc5.quality_gate import assess_rejection
         f={'template_source':{'title':'Описание объекта'},'source':{'source_quote':'Не допускается удалять или переименовывать пункты шаблона.'}}

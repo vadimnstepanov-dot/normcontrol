@@ -24,9 +24,10 @@ class OutputError(ValueError):
         super().__init__(message);self.response=response or {};self.metrics={'seconds':seconds,'usage':self.response.get('usage',{}),'timings':self.response.get('timings',{})}
 
 def output_budget(config,payload):
-    # Real answers are normally a few hundred tokens.  Smaller stage budgets leave
-    # room for larger source batches; an overflow is split and retried by Engine.
-    cap={'language':1024,'logic':2048,'sto':1792,'cross':2048,'inter':2048,'verify':1280,'feedback':1280}.get(payload['stage'],config['output'])
+    # Logic returns both facts and findings: starting at 2048 often truncates a
+    # valid response before retrying the same source with 4096. Reserve that
+    # capacity on the first pass; other stages keep their smaller budgets.
+    cap={'language':1024,'logic':4096,'sto':1792,'cross':2048,'inter':2048,'verify':1280,'feedback':1280}.get(payload['stage'],config['output'])
     if payload['stage']=='sto':cap=max(cap,512+320*sum(len(r.get('obligations',[])) for r in payload.get('requirements',[])))
     if payload['stage']=='verify' and config.get('verify_reasoning'):cap=2048
     return min(config['output'],max(cap,int(payload.get('_output_budget',0))))

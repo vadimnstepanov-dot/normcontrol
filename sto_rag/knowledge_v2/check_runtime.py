@@ -20,7 +20,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
     if checksum(payload['snapshot'])!=payload['snapshot_digest']:raise Conflict('Portal snapshot digest')
     def preparing(stage,operation,**details):
         with store.connection() as db:
-            if db.execute("SELECT 1 FROM tasks WHERE operation='review.run' AND json_extract(payload,'$.job_id')=?",(payload['job_id'],)).fetchone():return False
+            if db.execute("SELECT 1 FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone():return False
         response=bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],
             job_id=payload['job_id'],progress=dict(task_id=None,completed=0,total=None,percent=0,eta_seconds=None,
                 preview=[],stage=stage,operation=operation,**details)))
@@ -37,7 +37,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
     if payload.get('experience_release_id'):
         manifest,_=release_records(store,payload['experience_release_id'],authorize)
         if manifest['set_id']!=payload['experience_set_id']:raise Conflict('Experience release changed')
-    model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=24576,output_tokens=2048,timeout=300,store=store)
+    model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store)
     with tempfile.TemporaryDirectory(prefix='knowledge-check-') as temporary:
         preparing('download','Получение документов и проверка контрольных сумм')
         paths=[]
@@ -123,9 +123,9 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             # Existing jobs retain their pinned plan. New jobs compare templates
             # before any normative task, without an extra inference pass.
             with store.connection() as db:
-                old_template=db.execute("SELECT payload FROM tasks WHERE operation='review.run' AND json_extract(payload,'$.job_id')=?",(payload['job_id'],)).fetchone()
+                old_template=db.execute("SELECT json_extract(payload,'$.template_comparison') FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone()
             if old_template:
-                template_comparison=json.loads(old_template[0]).get('template_comparison')
+                template_comparison=json.loads(old_template[0]) if old_template[0] else None
             else:
                 from .template_check import build,TITLE
                 preparing('template',TITLE)
@@ -146,7 +146,12 @@ def execute(bridge,claim,download,client=None,experience_index=None):
         trace_report=None
         trace_enabled=payload.get('trace_version')=='package-trace-9.1.6'
         from .trace import links_for,plan as trace_plan,run as trace_run
-        trace_links=links_for(store,[r['release_id'] for r in selected],authorize) if trace_enabled else []
+        # Resuming a saved plan never inherits a later deployment's opt-in.
+        with store.connection() as db:
+            old_plan=db.execute("SELECT json_extract(payload,'$.include_candidates') FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone()
+        include_candidates=(bool(old_plan[0]) if old_plan else
+            __import__('os').getenv('KNOWLEDGE_INCLUDE_NORMATIVE_CANDIDATES','0')=='1')
+        trace_links=links_for(store,[r['release_id'] for r in selected],authorize,include_candidates=include_candidates) if trace_enabled else []
         from .model_queue import model_turn
         from .model_profile import ensure
         with model_turn(store,model):
@@ -186,14 +191,14 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             ensure(model,'text')
             preparing('plan','Подбор требований и точный расчёт пакетов по контекстному окну')
             task_id=runner.create(paths,profiles,facts,verify_fact,job_id=payload['job_id'],prepared_docs=docs,
-                experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [],template_comparison=template_comparison)
+                experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [],template_comparison=template_comparison,include_candidates=include_candidates)
             with store.connection() as db:
                 planned=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
             from .check_log import compact_plan
             emit('plan',compact_plan(planned))
             if visual_enabled:
                 from .visual_tail import plan
-                with store.connection() as db:review_payload=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
+                review_payload=planned
                 visual_batches,visual_unplanned=plan(review_payload['rows'],docs,model)
                 visual_total=len(visual_batches)
                 if visual_batches:
@@ -202,6 +207,10 @@ def execute(bridge,claim,download,client=None,experience_index=None):
                     with store.connection() as db:old_visual=json.loads(db.execute('SELECT cursor FROM tasks WHERE id=?',(visual_task,)).fetchone()[0])
                     visual_done=len(old_visual.get('results',{}))+len(old_visual.get('failures',{}))
                     if visual_done:progress_floor=len(review_payload['batches'])+trace_total+visual_done
+        # Both visual preparation and the journal refer to this same plan.
+        # Release it before report()/run_once() load their own durable task.
+        if visual_enabled:del review_payload
+        del planned
         previous=runner.report(task_id)
         # Initial token planning is a finished preparation stage, not recurring
         # per-task latency. A resume estimates only newly completed work.
@@ -278,6 +287,7 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             limitations=report['limitations']+(trace_report or {}).get('limitations',[])+
                 ([str(x['reason']) for x in visual_unplanned]+['Visual findings are preliminary source-linked observations, not expert-approved violations.'] if visual_enabled and (visual_batches or visual_unplanned) else []),
             normative_selection=report.get('normative_selection',[]),
+            candidate_analysis=report.get('candidate_analysis',{}),
             template_comparison=report.get('template_comparison'),
             traceability={k:v for k,v in (trace_report or {}).items() if k!='rows'},
             snapshot=report['snapshot'],experience_used=report['experience_used'],

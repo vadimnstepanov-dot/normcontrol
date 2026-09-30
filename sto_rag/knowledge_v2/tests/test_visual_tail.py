@@ -72,10 +72,56 @@ class InventoryTests(unittest.TestCase):
             return dict(choices=[dict(finish_reason=finish,message={'content':json.dumps({'decisions':[value]})})])
         client.http=reply;changes={};finish='stop'
         self.assertEqual(vt.complete(client,batch,'visual_check')[0]['obligation_id'],'r')
-        for changes in ({'bbox':[1,0,0,1]},{'obligation_id':'foreign'},{'evidence':[{'block_id':'foreign','quote':'invented'}]}):
+        changes={'evidence':[{'block_id':'B001'}]}
+        self.assertEqual(vt.complete(client,batch,'visual_check')[0]['evidence'][0]['quote'],batch['payload']['documents'][0]['text'])
+        for changes in ({'bbox':[1,0,0,1]},{'obligation_id':'foreign'},{'outcome':'violated','claim':'presence'},
+                        {'outcome':'satisfied','claim':'absence'},{'evidence':[{'block_id':'foreign','quote':'invented'}]}):
             with self.assertRaises(ValueError):vt.complete(client,batch,'visual_check')
         changes={};finish='length'
         with self.assertRaises(ValueError):vt.complete(client,batch,'visual_check')
+
+    def test_transparent_diagram_is_composited_on_white_without_changing_source(self):
+        rgba=Image.new('RGBA',(100,80),(0,0,0,0));rgba.putpixel((10,10),(0,0,0,255))
+        rgba.putpixel((20,20),(255,0,0,255));rgba.save(self.image)
+        d=Document();d.add_picture(str(self.image));d.save(self.path)
+        docs=corpus([self.path]);vt.prepare([self.path],docs,self.store)
+        item=docs[0]['visual_inventory']['items'][0]
+        source=self.store.directory/'review-visuals'/item['document_id']/item['original']
+        original=source.read_bytes()
+        with Image.open(vt.render(self.store,item)) as rendered:
+            self.assertEqual(rendered.getpixel((0,0)),(255,255,255))
+            self.assertEqual(rendered.getpixel((10,10)),(0,0,0))
+            self.assertEqual(rendered.getpixel((20,20)),(255,0,0))
+        self.assertEqual(source.read_bytes(),original)
+
+    def test_truncated_visual_group_splits_obligations_and_verifies_without_losing_context(self):
+        rows=[{'id':str(i)} for i in range(4)]
+        batch=dict(_render=str(self.image),image={'sha256':'unchanged'},payload=dict(obligations=rows,
+            documents=[{'id':'b','text':'Полный контекст'}],completeness={'full_text':False}))
+        before=copy.deepcopy(batch);calls=[]
+        def call(working,stage,proposed=None):
+            calls.append((stage,len(working['payload']['obligations'])))
+            for key in ('documents','completeness'):self.assertEqual(working['payload'][key],batch['payload'][key])
+            self.assertEqual(working['_render'],batch['_render']);self.assertEqual(working['image'],batch['image'])
+            if len(working['payload']['obligations'])>1:raise ValueError('Incomplete visual response')
+            if stage=='visual_verify':
+                self.assertEqual(proposed[0]['outcome'],'violated')
+                return [dict(d,outcome='unknown') for d in proposed]
+            return [dict(obligation_id=r['id'],outcome='violated') for r in working['payload']['obligations']]
+        result=vt.execute_batch(batch,call)
+        self.assertEqual([d['obligation_id'] for d in result],['0','1','2','3'])
+        self.assertTrue(all(d['outcome']=='unknown' for d in result));self.assertEqual(batch,before)
+        self.assertEqual(sum(stage=='visual_verify' for stage,size in calls),4)
+
+    def test_visual_validation_retry_receives_feedback_and_is_bounded(self):
+        batch=dict(payload={'obligations':[{'id':'r'}]});seen=[]
+        def call(working,stage,proposed=None):
+            seen.append(working)
+            raise ValueError('Visual verdict/claim mismatch')
+        with self.assertRaisesRegex(ValueError,'Visual verdict/claim mismatch'):vt.execute_batch(batch,call)
+        self.assertEqual(len(seen),2)
+        self.assertIn('Visual verdict/claim mismatch',seen[1]['payload']['validation_feedback'])
+        self.assertNotIn('validation_feedback',batch['payload'])
 
 
 class CursorTests(ReviewTests):
@@ -103,5 +149,23 @@ class CursorTests(ReviewTests):
         self.model.http=lambda path:{'modalities':{'vision':True}}
         with patch('knowledge_v2.model_profile.ensure') as switch,patch.object(vt,'render',side_effect=ValueError('unreadable')):
             result=vt.run(self.store,task,self.model,lambda sid:True,lambda *args:False)
-            self.assertEqual(result['failures']['x']['error'],'ValueError')
+            self.assertEqual(result['failures']['x']['error'],'unreadable')
+            self.assertEqual(result['failures']['x']['error_type'],'ValueError')
             self.assertEqual(switch.call_args_list[-1].args[1],'text')
+
+    def test_failed_visual_generation_is_in_token_accounting(self):
+        parent=self.create()
+        with self.store.connection() as db:payload=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(parent,)).fetchone()[0])
+        task=self.store.enqueue('visual.run','test-failed-usage',dict(batches=[dict(id='x',image={},payload={'obligations':[{'id':'r'}]})],
+            snapshot_id=payload['snapshot_id'],model_signature=self.model.signature))
+        self.model.http=lambda path:{'modalities':{'vision':True}}
+        def fail(*args):
+            self.model.last_usage={'prompt_tokens':100,'completion_tokens':50}
+            self.model.last_timings={'prompt_ms':20}
+            raise ValueError('Incomplete visual response')
+        with patch('knowledge_v2.model_profile.ensure') as switch,patch.object(vt,'render',return_value=self.path),patch.object(vt,'complete',side_effect=fail):
+            result=vt.run(self.store,task,self.model,lambda sid:True,lambda *args:False)
+        calls=result['failures']['x']['model_calls']
+        self.assertEqual(len(calls),2)
+        self.assertEqual(sum(c['usage']['prompt_tokens'] for c in calls),200)
+        self.assertEqual(switch.call_args_list[-1].args[1],'text')

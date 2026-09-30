@@ -1,6 +1,5 @@
 """Versioned, evidenced package trace. Missing catalogue edges are never violations."""
 import json,time,threading,uuid
-from .performance import measured
 from collections import Counter
 from .store import checksum,Conflict
 from .applicability import evaluate,validate_expression
@@ -68,29 +67,51 @@ def compile_links(selection,catalog,loaded):
     return result
 
 
-def links_for(store,releases,authorize):
+def links_for(store,releases,authorize,*,include_candidates=False):
     out=[]
     for rid in releases:
         manifest,records=release_records(store,rid,authorize)
         policy=next((r['payload'] for r in records.values() if r['kind']=='publication_policy'),{})
-        out.extend(dict(x,release_id=rid,set_id=manifest['set_id']) for x in policy.get('links',[]) if x.get('quality_executable',True))
+        for x in policy.get('links',[]):
+            value=dict(x,release_id=rid,set_id=manifest['set_id'])
+            if x.get('quality_executable',True):out.append(value);continue
+            if not include_candidates:continue
+            from .candidate_policy import eligible,GUIDANCE,VERSION as CANDIDATE_VERSION,SOFT_ISSUES
+            endpoints=[records.get(tuple(ref),{}).get('payload',{}) for ref in x.get('endpoint_refs',{}).values()]
+            def executable(req):
+                card=req.get('card',{});blocks=set(card.get('publication_trust',{}).get('blocking_reasons',[]))
+                if card.get('quality',{}).get('status')=='ready':return not blocks
+                context=[records.get(tuple(ref),{}).get('payload',{}) for ref in req.get('fragment_refs',[])]
+                return not (blocks-SOFT_ISSUES-{'quality_candidate'}) and eligible(card,context)
+            if len(endpoints)!=3 or not all(executable(req) for req in endpoints):continue
+            value.update(trusted=False,mandatory_target=False,candidate_analysis=dict(version=CANDIDATE_VERSION,guidance=GUIDANCE))
+            out.append(value)
     return out
 
 
-@measured('v2.trace.plan')
-def plan(links,docs,facts,verify,client):
+def plan(links,docs,facts,verify,client,*,routing_policy=None):
+    roles={}
+    if routing_policy is not None:
+        from .trace_roles import VERSION as ROLE_VERSION,enrich
+        if routing_policy!=ROLE_VERSION:raise ValueError('Unsupported trace routing policy')
+        docs,facts,verify,roles=enrich(docs,facts,verify)
     batches=[];initial=[]
     for link in links:
         matched=lambda kind:[d for d in docs if kind.casefold() in [t.casefold() for t in d.get('classification',{}).get('types',[d.get('classification',{}).get('type','')])]
                                     and 'document_type' in facts.get(d['id'],{})]
         source,target=matched(link['source_type']),matched(link['target_type'])
-        condition=evaluate(link['condition'],facts.get(source[0]['id'],{}) if len(source)==1 else {},verify)
+        condition=evaluate(link['condition'],facts.get(source[0]['id'],{}) if len(source)==1 else {},verify,review_scope=routing_policy is not None)
         row=dict(id=checksum([link['release_id'],link['id'],link['revision']]),link=link,
                  source_documents=[d['id'] for d in source],target_documents=[d['id'] for d in target])
+        if routing_policy:
+            row['routing']=dict(policy=routing_policy,condition=condition,
+                derived_roles={d['id']:roles[d['id']] for d in source+target if d['id'] in roles})
         def finish(state,reason,**extra):initial.append(dict(row,state=state,reason=reason,evidence=[],**extra))
         if condition['result']=='not_applicable':finish('not_applicable','Нормативная связь не применяется: условие доказанно ложно.',condition_evidence=condition['evidence']);continue
         if condition['result']=='unknown':finish('unknown','Не определены условия связи: '+'; '.join(condition['missing']));continue
         if not source:finish('unknown','Не найдена достоверно классифицированная исходная сторона.');continue
+        if routing_policy and set(row['source_documents'])&set(row['target_documents']):
+            finish('unknown','Роли исходной и целевой стороны пересекаются в одном документе; междокументная связь не установлена.');continue
         if not target:
             if any(d.get('classification',{}).get('type')=='unknown' or d.get('gaps') for d in docs):
                 finish('unknown','Состав комплекта нельзя доказать: неизвестный тип документа или непрочитанная область.');continue
@@ -143,12 +164,13 @@ def validate_trace(payload,raw):
     return rows
 
 
-@measured('v2.trace.run')
-def run(store,job_id,links,docs,facts,verify,client,authorize,checkpoint):
+def run(store,job_id,links,docs,facts,verify,client,authorize,checkpoint,*,routing_policy=None):
     """One durable result per link, including successful positive evidence."""
-    key=checksum([VERSION,job_id,links,[d['sha256'] for d in docs],facts,client.signature])
+    identity=[VERSION,job_id,links,[d['sha256'] for d in docs],facts,client.signature]
+    if routing_policy is not None:identity.append(dict(routing_policy=routing_policy))
+    key=checksum(identity)
     # Token-count planning is deterministic and contains no inference.
-    batches,initial=plan(links,docs,facts,verify,client)
+    batches,initial=plan(links,docs,facts,verify,client,routing_policy=routing_policy)
     tid=store.enqueue('trace.run','trace:'+key,dict(key=key,job_id=job_id,batches=batches,initial=initial),max_attempts=3)
     ttl=max(120,getattr(client,'timeout',300)*2+90)
     task=store.claim(operation='trace.run',task_id=tid,ttl=ttl)

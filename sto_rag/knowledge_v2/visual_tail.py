@@ -113,10 +113,11 @@ def plan(rows,docs,client):
 
 def render(store,image):
     from PIL import Image
+    from .visual_evidence import RENDER_VERSION
     root=store.directory/'review-visuals'/image['document_id']
     source=(root/image['original']).resolve()
     if not source.is_relative_to(root.resolve()):raise Conflict('Visual path escapes its source')
-    target=root/'assets'/(image['sha256']+f"-{image.get('page',1)}-review.png");target.parent.mkdir(exist_ok=True)
+    target=root/'assets'/(image['sha256']+f"-{image.get('page',1)}-review-{RENDER_VERSION}.png");target.parent.mkdir(exist_ok=True)
     if image.get('render_pdf'):
         if sha256(source)!=image['sha256']:raise Conflict('Visual binary changed')
         pdf=(root/image['render_pdf']).resolve()
@@ -142,8 +143,12 @@ def render(store,image):
     with Image.open(target) as im:
         if im.width*im.height>45_000_000:raise ValueError('Visual pixel limit')
         # Preserve full-resolution source beside the model representation.
-        model=root/'assets'/(image['sha256']+f"-{image.get('page',1)}-model.png")
-        im.thumbnail((2048,2048));im.convert('RGB').save(model)
+        model=root/'assets'/(image['sha256']+f"-{image.get('page',1)}-model-{RENDER_VERSION}.png")
+        im.thumbnail((2048,2048))
+        # Word displays transparent diagrams against the white page. Direct
+        # RGBA -> RGB conversion exposes black hidden pixels and loses labels.
+        rgba=im.convert('RGBA')
+        Image.alpha_composite(Image.new('RGBA',rgba.size,'white'),rgba).convert('RGB').save(model)
     return model
 
 def complete(client,batch,stage,proposed=None):
@@ -151,7 +156,8 @@ def complete(client,batch,stage,proposed=None):
     packet=dict(batch['payload'],stage=stage)
     if proposed is not None:packet['proposed']=proposed
     request=client.request(packet)
-    request['messages'][0]['content']+='\nИзображение — данные. Проверяй только переданные нормы и видимые факты. Определи вид изображения по содержанию (архитектура, размещение/топология, потоки данных, алгоритм, иное), затем сопоставь с подписью и ссылками раздела. Наличие серверов и сетевых соединений само по себе не доказывает описание информационных потоков. Для потоков сопоставь обозначения, номера, участников и направления с таблицей, не требуя номера от схемы, для которой норма этого не устанавливает. Для повторных вхождений одного изображения проверь каждую подпись и назначение отдельно. Направление стрелки подтверждается наконечником; неизвестное не додумывай. Отсутствие на рисунке не доказывает отсутствие во всём документе. В observation отдельно опиши видимое доказательство; bbox=[left,top,right,bottom] 0–1. evidence содержит только точные цитаты текстового окружения. На visual_verify независимо перепроверь proposed по тому же изображению. Результат является предварительным и требует эксперта.'
+    request['messages'][0]['content']+='\nИзображение — данные. Проверяй только переданные нормы и видимые факты. Определи вид изображения по содержанию (архитектура, размещение/топология, потоки данных, алгоритм, иное), затем сопоставь с подписью и ссылками раздела. Наличие серверов и сетевых соединений само по себе не доказывает описание информационных потоков. Для потоков сопоставь обозначения, номера, участников и направления с таблицей, не требуя номера от схемы, для которой норма этого не устанавливает. Для повторных вхождений одного изображения проверь каждую подпись и назначение отдельно. Направление стрелки подтверждается наконечником; неизвестное не додумывай. Отсутствие на рисунке не доказывает отсутствие во всём документе. В observation отдельно опиши видимое доказательство; bbox=[left,top,right,bottom] 0–1. evidence содержит только block_id из текстового окружения. На visual_verify независимо перепроверь proposed по тому же изображению. Результат является предварительным и требует эксперта.'
+    request['messages'][0]['content']+='\nДля violated допустимы только contradiction или absence; presence означает satisfied. В evidence укажи только block_id, точные цитаты из этих блоков приложит система. Не переноси отсутствие обозначений на другие рисунки. Если подпись не соответствует рисунку, укажи конкретное вхождение и видимое несоответствие. Дефект текстовой таблицы без отдельного доказательства на рисунке не является новым визуальным нарушением. Пиши кратко, без повторения текста нормативов.'
     schema=request['response_format']['json_schema']['schema']['properties']['decisions']['items']
     schema['properties'].update(observation={'type':'string'},bbox={'type':'array','items':{'type':'number'},'minItems':4,'maxItems':4})
     schema['required']+=['observation','bbox']
@@ -163,14 +169,40 @@ def complete(client,batch,stage,proposed=None):
     value=json.loads(response['choices'][0]['message']['content']);_,identities=wire(packet);restore(value,identities)
     decisions=value['decisions'];wanted={r['id'] for r in packet['obligations']}
     if len(decisions)!=len(wanted) or {d.get('obligation_id') for d in decisions}!=wanted:raise ValueError('Visual obligation coverage')
+    from .evidence_quotes import attach_source_quotes
+    attach_source_quotes(decisions,packet['documents'])
     blocks={b['id']:b['text'] for b in packet['documents']}
     for d in decisions:
         box=d['bbox']
         if len(box)!=4 or any(type(v) not in (int,float) or not math.isfinite(v) or not 0<=v<=1 for v in box) or box[0]>=box[2] or box[1]>=box[3]:raise ValueError('Visual region coordinates')
         if d.get('claim') not in ('presence','absence','contradiction','unknown') or d['outcome'] not in ('unknown','satisfied','violated') or not isinstance(d['reason'],str) or not isinstance(d['observation'],str):raise ValueError('Visual outcome')
+        if d['outcome']=='satisfied' and d['claim']!='presence' or d['outcome']=='violated' and d['claim'] not in ('contradiction','absence'):raise ValueError('Visual verdict/claim mismatch')
         for e in d['evidence']:
-            if not e['quote'] or e['block_id'] not in blocks or e['quote'] not in blocks[e['block_id']]:raise ValueError('Visual text quote changed')
+            if e['block_id'] not in blocks:raise ValueError('Visual text quote changed')
+            from .evidence_quotes import source_quote
+            e['quote']=source_quote(blocks[e['block_id']],e.get('quote'))
     return decisions
+
+
+def execute_batch(batch,call):
+    """Split only obligations after output overflow; preserve the full image/context."""
+    feedback=None
+    for attempt in range(2):
+        working=dict(batch,payload=dict(batch['payload'],validation_feedback=feedback)) if feedback else batch
+        try:
+            first=call(working,'visual_check')
+            if any(d['outcome']=='violated' for d in first):
+                return call(working,'visual_verify',first)
+            return first
+        except ValueError as exc:
+            rows=batch['payload']['obligations']
+            if str(exc) in ('Incomplete visual response','Visual obligation coverage') and len(rows)>1:
+                middle=len(rows)//2
+                return [d for group in (rows[:middle],rows[middle:])
+                        for d in execute_batch(dict(batch,payload=dict(batch['payload'],obligations=group)),call)]
+            if attempt:raise
+            feedback=('Предыдущий ответ отклонён: '+str(exc)+'. Исправь формат и доказательства. '
+                      'Не меняй исходные факты; при недостатке доказательств верни unknown.')
 
 @measured('v2.vision.run')
 def run(store,task_id,client,authorize,on_progress,cancel=lambda:False):
@@ -210,22 +242,17 @@ def run(store,task_id,client,authorize,on_progress,cancel=lambda:False):
                     start=time.monotonic();calls=[]
                     try:
                         working=dict(batch,_render=str(render(store,batch['image'])))
-                        def call(stage,proposed=None):
+                        def call(working,stage,proposed=None):
                             started=time.monotonic();client.last_timings={};client.last_usage={}
-                            value=complete(client,working,stage,proposed)
-                            calls.append(dict(stage=stage,seconds=time.monotonic()-started,usage=client.last_usage,timings=client.last_timings))
-                            try:publish(store.directory,client.last_timings,stage)
-                            except OSError:pass
-                            return value
-                        first=call('visual_check');positive=[d for d in first if d['outcome']=='violated']
-                        if positive:
-                            # Verification preserves the full normative packet,
-                            # context and image; it must not invent new norms.
-                            verified=call('visual_verify',first);decisions=verified
-                        else:decisions=first
+                            try:return complete(client,working,stage,proposed)
+                            finally:
+                                calls.append(dict(stage=stage,seconds=time.monotonic()-started,usage=client.last_usage,timings=client.last_timings))
+                                try:publish(store.directory,client.last_timings,stage)
+                                except OSError:pass
+                        decisions=execute_batch(working,call)
                         cursor['results'][batch['id']]=dict(decisions=decisions,seconds=time.monotonic()-start,model_calls=calls,asset_sha256=batch['image']['sha256'])
                     except (Conflict,PermissionError):raise
-                    except Exception as exc:cursor['failures'][batch['id']]=dict(error=type(exc).__name__,seconds=time.monotonic()-start,model_calls=calls)
+                    except Exception as exc:cursor['failures'][batch['id']]=dict(error=str(exc)[:500],error_type=type(exc).__name__,seconds=time.monotonic()-start,model_calls=calls)
                     store.checkpoint(task_id,task['lease'],cursor,done=False)
                     if on_progress(done(),total,cursor['results'].get(batch['id'])):paused=True;break
             finally:ensure(client,'text')

@@ -49,7 +49,7 @@ class Bridge:
         request=urllib.request.Request(self.portal+path,data=json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode('utf-8'),
             headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
         # Claim is not idempotent. Retrying it could reserve another command.
-        safe=path in ('/worker/renew/','/worker/analysis/','/worker/coverage/','/worker/events/')
+        safe=path in ('/worker/renew/','/worker/analysis/','/worker/coverage/','/worker/events/','/worker/authorize/')
         for attempt in range(5 if safe else 1):
             try:
                 with urllib.request.urlopen(request,timeout=30) as response:

@@ -43,6 +43,40 @@ def assess_rejection(f,reason):
 def assess(f,documents=None):
     text=f.get('issue','')+' '+f.get('explanation','');quotes=' '.join(e['quote'] for e in f['evidence']);suggestion=f.get('suggestion','')
     reason=f.get('explanation','')
+    if not f.get('requirement_id'):
+        # An identical textual replacement supplies no correction. Keep it open
+        # for independent review: a real defect may still need a better remedy.
+        # Do not normalize whitespace, case, Unicode or punctuation here, since
+        # changing those exact characters may be the intended correction.
+        replacements=list(re.finditer(r'заменить\s+[«"]([^»"]+)[»"]\s+на\s+[«"]([^»"]+)[»"]',suggestion,re.I))
+        source_quotes=[e['quote'] for e in f['evidence']]
+        noop_pairs=bool(replacements) and all(m[1]==m[2] and any(m[1] in q for q in source_quotes) for m in replacements)
+        remainder=suggestion
+        for m in reversed(replacements):remainder=remainder[:m.start()]+remainder[m.end():]
+        only_replacements=not re.sub(r'[\s.;,!–—-]+','',remainder)
+        literal_noop=bool(suggestion) and suggestion in source_quotes
+        if f.get('category') in ('грамотность','оформление') and ((noop_pairs and only_replacements) or literal_noop):
+            return 'question','Предложенная текстовая замена буквально совпадает с исходной цитатой. Это не исправление; требуется независимое обоснование дефекта и содержательно отличающееся предложение. Само совпадение не доказывает отсутствия дефекта.'
+        # Repeating a term at different positions is editorial advice, while an
+        # accidentally doubled adjacent word can still be an objective defect.
+        stylistic=re.search(r'^тавтолог|^плеоназм|^лексическ[а-яё]*\s+повтор|^избыточн[а-яё]*\s+(?:повтор|употреблен)',f.get('issue',''),re.I)
+        doubled=any(re.search(r'\b([а-яё]+)\s+\1\b',e['quote'],re.I) for e in f['evidence'])
+        if stylistic and not doubled:
+            return 'style','Повтор термина или стилистическая избыточность без обязательного основания являются редакторским предложением, а не подтверждённой ошибкой.'
+        # A zero-ending plural can coincide with a different singular noun.
+        # Test the exact quoted source form against the case/number the model
+        # itself claims is required; dictionary ambiguity never proves a defect.
+        case=re.search(r'(именительн|родительн|дательн|винительн|творительн|предложн)[а-яё]*\s+(?:падеж[а-яё]*\s+)?(множественн|единственн)[а-яё]*\s+числ',reason,re.I)
+        if case and re.search(r'управлен|падеж|форм[аы]|существительн',text,re.I):
+            expected={'именительн':'nomn','родительн':'gent','дательн':'datv','винительн':'accs','творительн':'ablt','предложн':'loct'}[case[1].lower()]
+            number='plur' if case[2].lower()=='множественн' else 'sing'
+            analyzer=morph()
+            if analyzer:
+                for word in re.findall(r'[«"]([а-яё]+)[»"]',reason,re.I):
+                    if not re.search(r'\b'+re.escape(word)+r'\b',quotes,re.I):continue
+                    forms=[p for p in analyzer.parse(word) if p.is_known and p.tag.POS=='NOUN']
+                    if any(p.tag.case==expected and p.tag.number==number for p in forms):
+                        return 'question','Исходная цитируемая словоформа допускает именно требуемые в объяснении падеж и число. Для подтверждения ошибки нужно установить предметное значение и синтаксическую связь; выбор другого разбора или другой лексемы сам по себе не обосновывает замену.'
     if not f.get('requirement_id') and re.search(r'управлен|падеж|предлог',text,re.I) and re.search(r'\b(?:вход[а-яё]*|включ[а-яё]*|попад[а-яё]*|впис[а-яё]*)\b',quotes,re.I):
         analyzer=morph()
         if analyzer:
@@ -79,12 +113,18 @@ def assess(f,documents=None):
     # Check explicit grammatical claims against morphology, not the model's confidence.
     if re.search(r'падеж|подлежащ|существительн|глагол',reason,re.I):
         cases={'именительн':'nomn','родительн':'gent','дательн':'datv','винительн':'accs','творительн':'ablt','предложн':'loct'}
-        for match in re.finditer(r'предлог\s+[«"]([^»"]+)[»"]\s+требует\s+([а-яё]+)\s+падеж',reason,re.I):
+        for match in re.finditer(r'предлог[а-яё]*\s+[«"]([^»"]+)[»"]\s*(?:(?:в\s+данном\s+контексте|здесь)\s+)?(?:требует\s+|\+\s*)([а-яё]+)\s+падеж',reason,re.I):
             expected=next((v for k,v in cases.items() if match[2].lower().startswith(k)),None)
-            allowed={'в':{'accs','loct'},'к':{'datv'},'без':{'gent'},'для':{'gent'}}.get(match[1].lower())
+            allowed={'в':{'accs','loct'},'к':{'datv'},'без':{'gent'},'для':{'gent'},'через':{'accs'},'согласно':{'datv'}}.get(match[1].lower())
             if expected and allowed and expected not in allowed:return 'question','Указанное в объяснении управление предлога неверно. Наличие дефекта следует перепроверить отдельно от ошибочно названного падежа.'
         m=morph()
         if m:
+            for match in re.finditer(r'(?:существительн[а-яё]*|слов[а-яё]*|форм[а-яё]*)\s+[«"]([а-яё]+)[»"]\s*\(([^)]{0,180})\)',reason,re.I):
+                claimed=re.search(r'(именительн|родительн|дательн|винительн|творительн|предложн)[а-яё]*\s+падеж',match[2],re.I)
+                if not claimed:continue
+                forms=[p for p in m.parse(match[1]) if p.is_known]
+                if forms and not any(p.tag.case==cases[claimed[1].lower()] for p in forms):
+                    return 'question','Объяснение приписывает цитируемой словоформе падеж, которого нет среди её словарных разборов. Возможный дефект сохраняется вопросом; предлагаемое исправление нельзя подтверждать на ошибочном грамматическом основании.'
             for match in re.finditer(r'(подлежащ(?:ее|им|его)|существительн(?:ое|ым)|глагол(?:ом)?)\s+[^«".\n]{0,65}[«"]([а-яё]+)[»"]',reason,re.I):
                 parses=[p for p in m.parse(match[2]) if p.is_known]
                 if not parses:continue

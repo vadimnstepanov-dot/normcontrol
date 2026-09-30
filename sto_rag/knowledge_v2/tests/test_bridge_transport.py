@@ -25,6 +25,36 @@ class TransportTests(unittest.TestCase):
             with self.assertRaises(urllib.error.URLError):self.bridge.http('/worker/claim/',{})
             self.assertEqual(request.call_count,1);sleep.assert_not_called()
 
+    def test_read_authorization_retries_gateway_error_with_identical_scope(self):
+        bodies=[]
+        def open_request(request,**kwargs):
+            bodies.append(request.data)
+            if len(bodies)==1:raise urllib.error.HTTPError(request.full_url,502,'Bad Gateway',{},None)
+            return io.BytesIO(b'{"allowed":true}')
+        with patch('knowledge_v2.bridge.urllib.request.urlopen',side_effect=open_request),patch('knowledge_v2.bridge.time.sleep'):
+            self.assertTrue(self.bridge.authorization_for('actor')('set'))
+        self.assertEqual(len(bodies),2);self.assertEqual(bodies[0],bodies[1])
+        self.assertEqual(json.loads(bodies[0]),{'user_id':'actor','set_id':'set','action':'read'})
+
+    def test_authorization_denial_after_outage_is_not_overridden(self):
+        error=urllib.error.HTTPError('https://portal',503,'Unavailable',{},None)
+        with patch('knowledge_v2.bridge.urllib.request.urlopen',side_effect=[error,io.BytesIO(b'{"allowed":false}')]) as request,patch('knowledge_v2.bridge.time.sleep'):
+            self.assertFalse(self.bridge.authorization_for('actor')('set'))
+            self.assertEqual(request.call_count,2)
+
+    def test_authorization_forbidden_and_untrusted_cert_are_not_retried(self):
+        errors=[urllib.error.HTTPError('https://portal',403,'Forbidden',{},None),urllib.error.URLError(ssl.SSLCertVerificationError('untrusted'))]
+        for error in errors:
+            with patch('knowledge_v2.bridge.urllib.request.urlopen',side_effect=error) as request,patch('knowledge_v2.bridge.time.sleep') as sleep:
+                with self.assertRaises(type(error)):self.bridge.authorization_for('actor')('set')
+                self.assertEqual(request.call_count,1);sleep.assert_not_called()
+
+    def test_authorization_outage_remains_failure_after_five_attempts(self):
+        error=urllib.error.HTTPError('https://portal',502,'Bad Gateway',{},None)
+        with patch('knowledge_v2.bridge.urllib.request.urlopen',side_effect=error) as request,patch('knowledge_v2.bridge.time.sleep'):
+            with self.assertRaises(urllib.error.HTTPError) as caught:self.bridge.authorization_for('actor')('set')
+            self.assertIs(caught.exception,error);self.assertEqual(request.call_count,5)
+
     def test_denied_stale_and_certificate_failures_are_not_retried(self):
         errors=[urllib.error.HTTPError('https://portal',code,'denied',{},None) for code in [401,403,409]]
         errors.append(urllib.error.URLError(ssl.SSLCertVerificationError('untrusted')))

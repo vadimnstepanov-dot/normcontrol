@@ -51,13 +51,26 @@ def plan(rows,blocks,client,scope,max_group=8):
             low_tokens=count(group,[]);high_tokens=count(group,blocks[start:high])
             if high_tokens<=budget:end=high
             else:
+                slow_probes=0;bisect_mode=False
                 while high-end>1:
-                    fraction=max(.01,min(.99,(budget-low_tokens)/max(1,high_tokens-low_tokens)))
-                    target=weights[end]+fraction*(weights[high]-weights[end])
-                    mid=max(end+1,min(high-1,bisect_left(weights,target,end+1,high)))
+                    # Text weights omit shared table/section metadata. Near a
+                    # metadata jump interpolation can crawl one block at a
+                    # time, sending hundreds of exact tokenizer requests.
+                    # Preserve fast interpolation near a measured boundary.
+                    # Real-document probes usually finish well within eight
+                    # refinements. Fall back only after eight consecutive
+                    # probes fail to remove at least a quarter of the range.
+                    if slow_probes>=8:bisect_mode=True
+                    width=high-end
+                    if not bisect_mode:
+                        fraction=max(.01,min(.99,(budget-low_tokens)/max(1,high_tokens-low_tokens)))
+                        target=weights[end]+fraction*(weights[high]-weights[end])
+                        mid=max(end+1,min(high-1,bisect_left(weights,target,end+1,high)))
+                    else:mid=(end+high)//2
                     tokens=count(group,blocks[start:mid])
                     if tokens<=budget:end=mid;low_tokens=tokens
                     else:high=mid;high_tokens=tokens
+                    slow_probes=slow_probes+1 if high-end>width*.75 else 0
             if end==start:
                 if len(group)==1:return [],list(group)
                 mid=len(group)//2;left,lf=build(group[:mid]);right,rf=build(group[mid:]);return left+right,lf+rf

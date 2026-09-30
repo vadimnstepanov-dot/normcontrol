@@ -5,6 +5,7 @@ import subprocess
 import math
 from .ingest import normalize
 
+RENDER_VERSION='white-background-v2'
 
 def render_visuals(result,run,cache,ocr,cancel):
     from PIL import Image
@@ -18,7 +19,7 @@ def render_visuals(result,run,cache,ocr,cancel):
         # Preview must be explicitly linked by its OOXML object, not just nearby text.
         linked=objects.get(v.get('preview_of'))
         preview=bool(linked and linked.get('state')=='read' and linked.get('method')=='embedded-docx-xml')
-        key=cache.key('visual-pages',dict(sha=v['sha256'],ocr=ocr and not preview,progid=v.get('progid')))
+        key=cache.key('visual-pages',dict(sha=v['sha256'],ocr=ocr and not preview,progid=v.get('progid'),renderer=RENDER_VERSION))
         old=cache.get(key)
         if old is None:
             try:
@@ -36,15 +37,16 @@ def render_visuals(result,run,cache,ocr,cancel):
                 else:count=1
                 for number in range(1,count+1):
                     if cancel():raise InterruptedError('Paused at visual page boundary')
-                    pk=cache.key('visual-page',dict(asset=v['sha256'],page=number,ocr=ocr and not preview))
+                    pk=cache.key('visual-page',dict(asset=v['sha256'],page=number,ocr=ocr and not preview,renderer=RENDER_VERSION))
                     page=cache.get(pk)
                     if page is None:
-                        png=run/'assets'/(v['sha256']+f'-page-{number}.png')
+                        png=run/'assets'/(v['sha256']+f'-page-{number}-{RENDER_VERSION}.png')
                         if converted:render_page(converted,number,png,dpi=240)
                         else:
                             with Image.open(asset) as im:
                                 if im.width*im.height>45_000_000:raise ValueError('Visual pixel limit')
-                                im.convert('RGB').save(png)
+                                rgba=im.convert('RGBA')
+                                Image.alpha_composite(Image.new('RGBA',rgba.size,'white'),rgba).convert('RGB').save(png)
                         page=dict(number=number,render='assets/'+png.name)
                         if ocr and not preview:
                             page['ocr']=RuledOCR().analyze(png,dict(source_asset=v['sha256'],page=number))

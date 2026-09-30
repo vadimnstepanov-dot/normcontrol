@@ -48,6 +48,42 @@ class ReviewTests(unittest.TestCase):
     def add(self, kind, rid, payload): self.store.put_record('set',kind,rid,1,payload)
     def create(self): return self.runner.create([self.path],{self.did:{'release':['profile']}},self.facts,lambda *args:True)
 
+    def test_resume_reuses_pinned_plan_without_token_planning_or_cursor_reset(self):
+        from unittest.mock import patch
+        args=([self.path],{self.did:{'release':['profile']}},self.facts,lambda *args:True)
+        task=self.runner.create(*args,job_id='durable-resume');self.runner.run_once(task)
+        with self.store.connection() as db:before=dict(db.execute('SELECT payload,cursor,state FROM tasks WHERE id=?',(task,)).fetchone())
+        with patch.object(self.model,'count',side_effect=AssertionError('Replanning an existing task')):
+            self.assertEqual(self.runner.create(*args,job_id='durable-resume'),task)
+        with self.store.connection() as db:after=dict(db.execute('SELECT payload,cursor,state FROM tasks WHERE id=?',(task,)).fetchone())
+        self.assertEqual(before,after)
+
+    def test_resume_rejects_changed_facts_owner_or_prepared_blocks(self):
+        args=([self.path],{self.did:{'release':['profile']}},self.facts,lambda *args:True)
+        self.runner.create(*args,job_id='fixed-input')
+        other=ReviewRunner(self.store,self.model,lambda sid:True,owner='other')
+        with self.assertRaises(PermissionError):other.create(*args,job_id='fixed-input')
+        prepared=corpus([self.path]);prepared[0]['blocks'][0]['text']='Changed evidence'
+        with self.assertRaises(Conflict):self.runner.create(*args,job_id='fixed-input',prepared_docs=prepared)
+        self.facts[self.did]['extra']={'value':'changed','evidence':[]}
+        with self.assertRaises(Conflict):self.runner.create(*args,job_id='fixed-input')
+
+    def test_targeted_run_does_not_parse_unrelated_task_payloads(self):
+        import contextlib
+        self.store.enqueue('review.run','unrelated',dict(owner='large-unrelated',documents=['x'*10000]))
+        original=self.store.connection
+        @contextlib.contextmanager
+        def guarded():
+            with original() as db:
+                def extract(payload,path):
+                    value=json.loads(payload)
+                    if value.get('owner')=='large-unrelated':raise AssertionError('Unrelated large plan was parsed')
+                    return value.get(path.removeprefix('$.'))
+                db.create_function('json_extract',2,extract)
+                yield db
+        self.store.connection=guarded
+        self.assertFalse(self.runner.run_once('no-such-task'))
+
     def test_end_to_end_full_ledger_shared_text_and_verifier_scope(self):
         task=self.create();self.runner.run_once();report=self.runner.report(task)
         self.assertEqual(report['normative_coverage']['total'],2)

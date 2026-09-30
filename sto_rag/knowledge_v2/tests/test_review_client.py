@@ -1,4 +1,5 @@
 import copy,json,unittest
+from unittest.mock import patch
 from knowledge_v2.review_client import wire_payload,LlamaClient
 from knowledge_v2.review_wire import restore,serialize
 
@@ -7,6 +8,39 @@ def unpack(wire):
     return [dict(zip(columns,row)) for row in wire['documents']]
 
 class WireTests(unittest.TestCase):
+    def test_model_block_alias_is_restored_before_source_quote_is_attached(self):
+        from knowledge_v2.store import checksum
+        from knowledge_v2.review_wire import VERSION
+        c=LlamaClient.__new__(LlamaClient);c.model='test';c.output_tokens=4096;c.context=49152
+        c.signature=checksum(dict(props={},model='test',temperature=0,thinking=False,wire_version=VERSION))
+        c.count=lambda payload:0
+        def reply(path,*args,**kwargs):
+            if path=='/props':return {}
+            if path=='/v1/models':return {'data':[{'id':'test'}]}
+            return {'choices':[dict(finish_reason='stop',message={'content':json.dumps({'decisions':[
+                dict(obligation_id='R001',outcome='satisfied',claim='presence',reason='Есть',evidence=[{'block_id':'B001'}])
+            ]})})]}
+        c.http=reply
+        payload=dict(stage='check',obligations=[{'id':'rule'}],documents=[{'id':'source-block','text':'Не менее\u00a048 часов; кроме тестовой среды.'}])
+        with patch('knowledge_v2.model_profile.ensure'):
+            decision=c.complete(payload)['decisions'][0]
+        self.assertEqual(decision['obligation_id'],'rule')
+        self.assertEqual(decision['evidence'],[{'block_id':'source-block','quote':payload['documents'][0]['text']}])
+
+    def test_normative_evidence_is_block_only_and_verify_does_not_duplicate_quotes(self):
+        c=LlamaClient.__new__(LlamaClient);c.model='test';c.output_tokens=4096
+        original=dict(stage='verify',obligations=[{'id':'r'}],documents=[{'id':'b','text':'Полный исходный текст'}],
+            proposed=[dict(obligation_id='r',evidence=[dict(block_id='b',quote='Полный исходный текст')])])
+        before=copy.deepcopy(original);req=c.request(original)
+        item=req['response_format']['json_schema']['schema']['properties']['decisions']['items']['properties']['evidence']['items']
+        self.assertEqual(item['required'],['block_id']);self.assertFalse(item['additionalProperties'])
+        packed=json.loads(req['messages'][1]['content'])
+        self.assertEqual(packed['proposed'][0]['evidence'],[{'block_id':'B001'}])
+        self.assertEqual(original,before)
+        trace=c.request(dict(original,stage='trace_check'))
+        evidence=trace['response_format']['json_schema']['schema']['properties']['decisions']['items']['properties']['evidence']['items']
+        self.assertEqual(evidence['required'],['block_id','quote'])
+
     def test_aliases_keep_full_evidence_and_do_not_mutate_durable_plan(self):
         payload={'stage':'verify','obligations':[{'id':'a'*64,'obligation_id':'uuid-a','context':['Full condition']},{'id':'b'*64,'obligation_id':'uuid-b'}],
                  'documents':[{'id':'document','text':'Full text'}], 'completeness':{'complete':False},
