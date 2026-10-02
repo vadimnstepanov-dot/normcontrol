@@ -1,0 +1,13 @@
+{
+  "host": "192.0.2.10",
+  "port": 8123,
+  "token_file": "C:/NormControl/secrets/host.token",
+  "allowed_networks": [
+    "172.16.0.0/12"
+  ],
+  "certificate": "C:/NormControl/secrets/gateway.crt",
+  "private_key": "C:/NormControl/secrets/gateway.key",
+  "word_data": "C:/NormControl/word-data",
+  "word_script": "C:/path/to/normcontrol/sto_rag/nc5/word_export.ps1",
+  "import_files": []
+}

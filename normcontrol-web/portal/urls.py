@@ -7,6 +7,7 @@ from . import chat
 chat_routes=[path('chat/',chat.page,name='chat'),path('chat/preferences/',chat.preference,name='chat-preferences'),
 path('chat/conversations/',chat.conversations,name='chat-conversations'),path('chat/conversations/<uuid:cid>/',chat.conversation,name='chat-conversation'),
 path('chat/conversations/<uuid:cid>/send/',chat.send,name='chat-send'),path('chat/conversations/<uuid:cid>/control/',chat.control,name='chat-control'),
+path('chat/conversations/<uuid:cid>/model/',chat.model_action,name='chat-model-action'),
 path('chat/conversations/<uuid:cid>/export/<str:kind>/',chat.export,name='chat-export')]
 routes=[path('',v.dashboard,name='dashboard'),path('login/',v.sign_in,name='login'),path('register/',v.self_register,name='register'),path('logout/',v.sign_out,name='logout'),
 path('batches/new/',v.new_batch,name='new'),path('batches/<uuid:pk>/',v.detail,name='batch'),path('batches/<uuid:pk>/action/',v.batch_action,name='batch-action'),path('batches/<uuid:pk>/documents/add/',v.add_documents,name='batch-add-documents'),path('documents/<int:pk>/download/',v.download,name='download'),

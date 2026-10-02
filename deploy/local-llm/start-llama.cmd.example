@@ -15,4 +15,5 @@ if /I not "%NORMCONTROL_LLM_PROFILE%"=="vision" if /I not "%NORMCONTROL_LLM_PROF
   --host 127.0.0.1 --port 8082 --alias local-qwen ^
   --fit off --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 ^
   --batch-size 2048 --ubatch-size 512 --parallel 1 ^
+  --cache-ram 1024 --ctx-checkpoints 2 ^
   --jinja

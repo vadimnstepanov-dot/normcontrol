@@ -251,7 +251,7 @@ def run(store,task_id,client,authorize,on_progress,cancel=lambda:False):
                                 except OSError:pass
                         decisions=execute_batch(working,call)
                         cursor['results'][batch['id']]=dict(decisions=decisions,seconds=time.monotonic()-start,model_calls=calls,asset_sha256=batch['image']['sha256'])
-                    except (Conflict,PermissionError):raise
+                    except (Conflict,PermissionError,__import__('pipeline').QueuePaused):raise
                     except Exception as exc:cursor['failures'][batch['id']]=dict(error=str(exc)[:500],error_type=type(exc).__name__,seconds=time.monotonic()-start,model_calls=calls)
                     store.checkpoint(task_id,task['lease'],cursor,done=False)
                     if on_progress(done(),total,cursor['results'].get(batch['id'])):paused=True;break
@@ -259,6 +259,9 @@ def run(store,task_id,client,authorize,on_progress,cancel=lambda:False):
         if paused:
             with store.connection() as db:db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND lease=?",(task_id,task['lease']))
         else:store.checkpoint(task_id,task['lease'],cursor,done=True)
+    except __import__('pipeline').QueuePaused:
+        paused=True;store.checkpoint(task_id,task['lease'],cursor)
+        with store.connection() as db:db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND lease=?",(task_id,task['lease']))
     except Exception as exc:
         store.fail_task(task_id,task['lease'],type(exc).__name__,permanent=isinstance(exc,(Conflict,PermissionError)));raise
     finally:stop.set();thread.join(timeout=2)

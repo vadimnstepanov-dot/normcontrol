@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
-from zipfile import ZipFile, BadZipFile
+from zipfile import BadZipFile
+from word_source import open_archive as ZipFile
 
 from .store import KnowledgeStore, Conflict, checksum
 
@@ -255,7 +256,7 @@ def convert_doc(path):
 def parse(path,filename=None):
     kind=inspect(path,filename)
     if kind=='.docx':blocks,coverage,counts=parse_docx(path)
-    elif kind=='.doc':blocks,coverage,counts=convert_doc(path)
+    elif kind=='.doc':blocks,coverage,counts=parse_docx(path)
     else:blocks,coverage,counts=parse_pdf(path)
     classification=classify(blocks)
     if classification['type']=='unknown':
@@ -272,7 +273,7 @@ def parse(path,filename=None):
             block.get('header_path',[]),block.get('merge_origin'),block.get('exact_text')],ensure_ascii=False).encode()).hexdigest()
         coverage.append(dict(locator=block['locator'],state='context' if block.get('is_heading') else 'needs_review',
                              reason='Heading context' if block.get('is_heading') else 'Requires normative interpretation in stage 4'))
-    return dict(parser_version=PARSER_VERSION,kind=kind,classification=classification,blocks=blocks,coverage=coverage,counts=counts)
+    return dict(parser_version=PARSER_VERSION+('+native-doc-v1' if kind=='.doc' else ''),kind=kind,classification=classification,blocks=blocks,coverage=coverage,counts=counts)
 
 
 def ingest(store:KnowledgeStore,set_id,source_id,filename,sha,stream,supersedes=None):

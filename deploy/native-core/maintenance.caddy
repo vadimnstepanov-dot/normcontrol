@@ -1,0 +1,24 @@
+# Insert INSIDE the existing `handle /normcontol/*` before reverse_proxy.
+# A site-level route is sorted after handle and would never see these requests.
+# MAINTENANCE_PUBLIC_DIR must point to this directory. `on` creates the file;
+# `off` removes it. There is no proxy reload for routine on/off operations.
+@nc_planned_maintenance {
+    path /normcontol/*
+    not path /normcontol/worker/* /normcontol/knowledge/worker/* /normcontol/static/* /normcontol/health*
+    file {
+        root /var/lib/normcontrol-notice
+        try_files /maintenance.html
+    }
+}
+route @nc_planned_maintenance {
+    root * /var/lib/normcontrol-notice
+    rewrite * /maintenance.html
+    header {
+        Cache-Control "no-store"
+        Retry-After "30"
+        X-NormControl-Maintenance "proxy"
+    }
+    file_server {
+        status 503
+    }
+}

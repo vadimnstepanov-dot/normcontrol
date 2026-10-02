@@ -22,19 +22,22 @@ def model_turn(store,client):
     with store.connection() as db:
         db.execute('CREATE TABLE IF NOT EXISTS model_tickets(id TEXT PRIMARY KEY,model TEXT NOT NULL,created REAL NOT NULL,expires REAL NOT NULL,state TEXT NOT NULL)')
         db.execute('INSERT INTO model_tickets VALUES(?,?,?,?,?)',(ticket,model,time.time(),time.time()+timeout+60,'waiting'))
-    deadline=time.monotonic()+timeout
+    last_notice=-float('inf')
     try:
         with span('queue.wait'):
             while True:
                 with store.connection() as db:
                     db.execute('BEGIN IMMEDIATE')
                     db.execute('DELETE FROM model_tickets WHERE expires<?',(time.time(),))
+                    db.execute("UPDATE model_tickets SET expires=? WHERE id=? AND state='waiting'",(time.time()+timeout+60,ticket))
                     busy=db.execute("SELECT 1 FROM model_tickets WHERE model=? AND state='running'",(model,)).fetchone()
                     first=db.execute("SELECT id FROM model_tickets WHERE model=? AND state='waiting' ORDER BY created,id LIMIT 1",(model,)).fetchone()
                     if not busy and first and first['id']==ticket:
                         db.execute("UPDATE model_tickets SET state='running',expires=? WHERE id=?",(time.time()+timeout+60,ticket))
                         break
-                if time.monotonic()>=deadline:raise TimeoutError('Model turn queue timed out; retry from durable cursor')
+                if time.monotonic()-last_notice>=1:
+                    from pipeline import waiting
+                    waiting({'state':'waiting','waiting_reason':'resource'},getattr(client,'_queue_wait',None));last_notice=time.monotonic()
                 time.sleep(.2)
         previous=getattr(client,'_model_ticket',None);client._model_ticket=ticket
         stop=threading.Event();lost=threading.Event()

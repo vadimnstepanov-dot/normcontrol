@@ -369,6 +369,9 @@ def main(envfile):
     with sqlite3.connect(db,timeout=2) as connection:
         last_ended=connection.execute('SELECT coalesce(max(ended),0) FROM tasks').fetchone()[0]
     last_timing=None;last_pid=None;last_v2_ended=0;degradation=Degradation()
+    from memory_reclaim import Reclaimer
+    from pipeline import host
+    reclaimer=Reclaimer(DATA/'memory-policy.json',host())
     psutil.cpu_percent(interval=None)
     note='';pending_command=previous.get('operation')
     while True:
@@ -399,6 +402,8 @@ def main(envfile):
             'timing_at':current_timing['ended'] if current_timing else None}
         payload={'sample':sample}
         try:
+            if reclaimer.check(memory.available//1048576,sample['processing']):
+                sample['note']='Освобождён файловый кэш WSL для продолжения проверки'
             req=urllib.request.Request(endpoint,data=json.dumps(payload).encode(),headers={
                 'Authorization':'Bearer '+token,'Content-Type':'application/json'})
             with urllib.request.urlopen(req,timeout=15) as response:reply=json.load(response)

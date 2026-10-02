@@ -20,6 +20,8 @@ llama-server.exe ^
   --batch-size 2048 ^
   --ubatch-size 512 ^
   --parallel 1 ^
+  --cache-ram 1024 ^
+  --ctx-checkpoints 2 ^
   --temp 0.2 ^
   --top-p 0.9 ^
   --jinja

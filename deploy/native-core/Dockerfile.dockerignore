@@ -1,0 +1,15 @@
+**
+!sto_rag/
+!sto_rag/**
+sto_rag/data/
+**/__pycache__/**
+**/*.pyc
+**/*.doc
+**/*.docx
+**/*.gguf
+**/*.env
+**/*.key
+**/*.pem
+**/*.pfx
+**/*.p12
+**/*.ppk

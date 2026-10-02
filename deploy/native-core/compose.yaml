@@ -1,0 +1,59 @@
+name: normcontrol-core
+x-core: &core
+  image: ${NORMCONTROL_CORE_IMAGE:-normcontrol/native-core:1.0.0}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 6m
+  volumes:
+    - ${NORMCONTROL_CORE_DATA:-/opt/normcontrol/native-core/data}:/data/nc5
+    - ${NORMCONTROL_CORE_SECRETS:-/opt/normcontrol/native-core/secrets}:/run/secrets:ro
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  environment: &environment
+    NORMCONTROL_QUEUE_ENDPOINT: ${NORMCONTROL_QUEUE_ENDPOINT:?Set the TLS queue endpoint}
+    NORMCONTROL_HOST_ENDPOINT: ${NORMCONTROL_HOST_ENDPOINT:?Set the Windows TLS bridge endpoint}
+    NORMCONTROL_QUEUE_TOKEN_FILE: /run/secrets/queue.token
+    NORMCONTROL_HOST_TOKEN_FILE: /run/secrets/host.token
+    NORMCONTROL_LLM_CA_FILE: /run/secrets/gateway.crt
+    NORMCONTROL_WORKER_ENV_FILE: /run/secrets/worker.env
+services:
+  gateway:
+    <<: *core
+    command: [python,-m,native_core.gateway,/run/secrets/gateway.json]
+    mem_limit: 384m
+    cpus: 0.5
+    ports: ["${NORMCONTROL_QUEUE_BIND:-127.0.0.1}:8098:8098"]
+    healthcheck:
+      test: [CMD,python,-m,native_core.health,gateway]
+      interval: 15s
+      timeout: 7s
+      retries: 4
+  worker:
+    <<: *core
+    command: [python,-m,native_core.runtime,worker]
+    mem_limit: 2g
+    cpus: 2
+    depends_on:
+      gateway: {condition: service_healthy}
+    healthcheck:
+      test: [CMD,python,-m,native_core.health,worker]
+      interval: 30s
+      timeout: 7s
+      retries: 4
+  api:
+    <<: *core
+    command: [python,-m,native_core.runtime,api]
+    mem_limit: 768m
+    cpus: 0.5
+    ports: ["${NORMCONTROL_API_BIND:-127.0.0.1}:8096:8096"]
+    depends_on:
+      gateway: {condition: service_healthy}
+    healthcheck:
+      test: [CMD,python,-m,native_core.health,api]
+      interval: 15s
+      timeout: 7s
+      retries: 4
+

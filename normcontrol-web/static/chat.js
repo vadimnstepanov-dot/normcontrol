@@ -8,6 +8,7 @@
   let preferenceTimer,preferenceBusy=false,pendingPreferences={};
   let historyLoading=false,historyLoaded=false;
   let clockNode=null,clockValue=null,clockReceived=0;
+  let modelClocks=[];
   const prefs=$('expert-toggle'), frame=$('expert-frame');
   async function api(path,method='GET',body=null){
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),method==='GET'?15000:60000);
@@ -37,11 +38,12 @@
   function saveDraft(){
     try{localStorage.setItem(cacheKey(),JSON.stringify(draft()));}catch(e){notify('Не удалось сохранить черновик');}
     clearTimeout(draftTimer);
-    if(current&&!current.batch){const cid=current.id,value=draft();draftTimer=setTimeout(()=>api('conversations/'+cid+'/','POST',value).catch(e=>notify(e.message)),600);}
+    if(current&&!current.batch){const cid=current.id,value={...draft(),message_id:current.messages?.at(-1)?.id||0};draftTimer=setTimeout(()=>api('conversations/'+cid+'/','POST',value).catch(e=>{if(e.status!==409)notify(e.message);}),600);}
   }
   function restoreDraft(){
     let saved=current?.draft||{};try{saved={...saved,...JSON.parse(localStorage.getItem(cacheKey())||'{}')};}catch(e){}
-    $('message').value=saved.text||'';config={checks:saved.checks||[],normative_sets:saved.normative_sets||[],experience:saved.experience||'',roles:[]};
+    $('message').value=saved.text||'';config={checks:saved.checks||[],normative_sets:saved.normative_sets||[],experience:saved.experience||'',roles:[],mode:saved.mode||'auto'};
+    $('message-mode').value=config.mode;
     if(saved.roles?.length)notify('Для восстановления черновика прикрепите файлы повторно.');
   }
   function attachmentList(){
@@ -66,18 +68,33 @@
     return (hours?hours+' ч ':'')+(minutes||hours?minutes+' мин ':'')+rest+' с';
   }
   function updateClock(){
+    for(const clock of modelClocks)clock.node.textContent='Работает уже '+duration(clock.seconds+(performance.now()-clockReceived)/1000);
     if(!clockNode||!clockValue)return;
     const seconds=clockValue.seconds+(clockValue.live?(performance.now()-clockReceived)/1000:0);
     clockNode.textContent=clockValue.label+' '+duration(seconds);
   }
   function render(){
     const data=current;clockValue=data?.state?.clock;clockReceived=performance.now();
+    for(const clock of modelClocks)clock.seconds=Math.max(0,(data?.server_time||Date.now()/1000)-clock.started);
     // Polling clock samples must not rebuild messages or steal control focus.
-    const signature=JSON.stringify(data?{messages:data.messages,state:{...data.state,clock:null}}:null);if(signature===rendered){updateClock();return;}rendered=signature;clockNode=null;
+    const signature=JSON.stringify(data?{messages:data.messages,state:{...data.state,clock:null}}:null);if(signature===rendered){updateClock();return;}rendered=signature;clockNode=null;modelClocks=[];
     const main=$('chat-main'),nearBottom=main.scrollHeight-main.scrollTop-main.clientHeight<80,position=main.scrollTop;
     document.body.classList.toggle('chat-empty',!data?.messages?.length);$('empty').hidden=!!data?.messages?.length;$('messages').replaceChildren();
     for(const m of data?.messages||[]){const row=node('article',null,'message '+m.role),label=node('div',null,'message-label');label.append(node('span',m.role==='user'?'Вы':'NormControl'));row.append(label,node('div',m.text));
       for(const doc of m.metadata.documents||[])row.append(node('div',doc.name+' · '+(doc.role==='approved_reference'?'Как основание':'Проверить'),'doc-name'));
+      if(m.metadata.kind==='model'){
+        const pending=['queued','running'].includes(m.metadata.state);
+        if(pending){const clock=node('span',null,'chat-elapsed');label.append(clock);modelClocks.push({node:clock,started:m.metadata.started_at,seconds:Math.max(0,(data.server_time||Date.now()/1000)-m.metadata.started_at)});}
+        if(m.metadata.context_omitted)row.append(node('div','Использована последняя часть переписки: ранние сообщения не помещаются в контекст.','progress'));
+        if(m.metadata.truncated)row.append(node('div','Ответ достиг ограничения длины. Можно попросить продолжение.','progress'));
+        const citations=(m.metadata.rag_sources||[]).filter(s=>m.text.includes('['+s.label+']')&&/^\/normcontol\/knowledge\//.test(s.url));
+        if(citations.length){const sources=node('div',null,'chat-rag-sources');sources.append(node('div','Источники из базы знаний'));for(const s of citations){const link=node('a','['+s.label+'] '+s.name+(s.locator?' · '+s.locator:''));link.href=s.url;link.target='_blank';link.rel='noopener';sources.append(link);}row.append(sources);}
+        if(m.metadata.rag_trimmed)row.append(node('div','Материалы базы сокращены до доступного контекста модели.','progress'));
+        if(pending||['failed','cancelled'].includes(m.metadata.state)){
+          const controls=node('div',null,'actions'),action=pending?'cancel':'retry',button=node('button',pending?'Отменить ответ':'Повторить запрос');
+          button.onclick=async()=>{button.disabled=true;try{const c=await api('conversations/'+data.id+'/model/','POST',{response:m.metadata.response_id,action});if(current?.id===data.id){current=c;render();}}catch(e){notify(e.message);}finally{button.disabled=false;}};controls.append(button);row.append(controls);
+        }
+      }
       if(m.metadata.kind==='progress'&&data.state){const state=data.state;
         if(state.clock?.known){clockNode=node('span',null,'chat-elapsed');clockNode.setAttribute('aria-live','off');clockNode.title=state.clock.note;label.append(clockNode);updateClock();}
         if(state.progress)row.append(node('div','Выполнено задач: '+state.progress.completed+' из '+state.progress.total+'. План может уточняться.','progress'));
@@ -89,7 +106,7 @@
           for(const exp of state.exports){if(exp.url){const link=node('a','Скачать Word с правками');link.href=exp.url;exports.append(link);}else exports.append(node('span',exp.error||({queued:'Word в очереди на формирование',building:'Word формируется',planned:'Word подготовлен к формированию',waiting_ram:'Word ожидает свободной памяти',failed:'Ошибка формирования Word'})[exp.state]||exp.state,'progress'));}row.append(exports);}
       }$('messages').append(row);
     }
-    if(nearBottom)main.scrollTop=main.scrollHeight;else main.scrollTop=position;
+    updateClock();if(nearBottom)main.scrollTop=main.scrollHeight;else main.scrollTop=position;
   }
   function updateURL(push=false){const url=new URL(location.href);url.pathname=base;url.search='';if(current)url.searchParams.set('conversation',current.id);history[push?'pushState':'replaceState']({},'',url);}
   function open(c,navigate=true){current=c;files=[];$('documents').value='';key=crypto.randomUUID();rendered='';restoreDraft();attachmentList();conditions();render();if(navigate)updateURL(true);if(expert)loadExpert();}
@@ -121,12 +138,14 @@
   $('documents').onchange=e=>attach([...e.target.files]);
   $('chat-main').ondragover=e=>e.preventDefault();$('chat-main').ondrop=e=>{e.preventDefault();attach([...e.dataTransfer.files]);};
   $('message').oninput=saveDraft;
+  $('message-mode').onchange=()=>{config.mode=$('message-mode').value;saveDraft();};
   $('composer').onsubmit=async e=>{e.preventDefault();if(sending)return;sending=true;$('send').disabled=true;notify('Передача запроса…');
+    clearTimeout(draftTimer);
     try{if(!current){current=await api('conversations/','POST',{key:conversationKey});updateURL();}
       const form=new FormData();form.append('text',$('message').value.trim()||$('message').placeholder);form.append('key',key);form.append('config',JSON.stringify(config));for(const f of files)form.append('documents',f);
       current=await api('conversations/'+current.id+'/send/','POST',form);
       try{localStorage.removeItem(cacheKey());localStorage.removeItem('normcontrol-chat-draft:'+uid+':new');}catch(e){}
-      files=[];$('documents').value='';$('message').value='';config={checks:[],normative_sets:[],roles:[]};key=crypto.randomUUID();attachmentList();$('conditions').hidden=true;render();notify('');
+      files=[];$('documents').value='';$('message').value='';config={checks:[],normative_sets:[],roles:[],mode:$('message-mode').value};key=crypto.randomUUID();attachmentList();$('conditions').hidden=true;render();notify('');
     }catch(e){notify(e.message);if(e.data?.clarification){if(e.data.conversation){current=e.data.conversation;render();} $('conditions').hidden=false;conditions();}}finally{sending=false;$('send').disabled=false;}
   };
   $('new-chat').onclick=async()=>{if(sending){notify('Дождитесь передачи запроса');return;}saveDraft();try{const next=await api('conversations/','POST',{});frame.removeAttribute('src');frameBatch='';initial.expert_url='';open(next);}catch(e){notify(e.message);}};

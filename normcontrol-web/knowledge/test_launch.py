@@ -41,14 +41,42 @@ class UnifiedLaunchTests(TestCase):
                 self.assertEqual(response.status_code,status)
             claim.assert_called_once()
 
+    def test_pipeline_status_includes_live_normative_stage(self):
+        job=self.launch()
+        WorkerRun.objects.create(batch=self.batch,state='running',local_id='active-native',
+                                 snapshot={'pipeline':[{'stage':'material','state':'done'}]})
+        response=self.client.get(f'/normcontol/batches/{self.batch.pk}/status/')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json()['snapshot']['pipeline_normative']['state'],job.state)
+
     def test_pipeline_claim_can_prepare_while_native_is_running(self):
         from portal.models import WorkerPresence
         WorkerPresence.objects.create(name='new-native',state='idle',details={'pipeline_version':'pipeline-v1'})
-        job=self.launch();WorkerRun.objects.create(batch=self.batch,state='running',worker='new-native')
+        job=self.launch();WorkerRun.objects.create(batch=self.batch,state='running',worker='new-native',local_id='native-preparing')
         c=Command.objects.get(payload__job_id=str(job.pk));self.assertEqual(c.payload['pipeline_version'],'pipeline-v1')
         self.assertIsNone(self.claim());c.refresh_from_db();self.assertEqual(c.attempts,0)
         claim=services.claim('unified',['review.execute','trace.suggest'],['context-budget-v5','visual-tail-v1','pipeline-v1'])
         self.assertIsNotNone(claim)
+
+    def test_pipeline_queued_package_does_not_block_previous_normative_retry(self):
+        from portal.models import WorkerPresence
+        WorkerPresence.objects.create(name='new-native',state='idle',details={'pipeline_version':'pipeline-v1'})
+        newer=self.launch()
+        ready=Batch.objects.create(owner=self.user,name='Earlier package',checks=['sto','logic'])
+        Document.objects.create(batch=ready,name='earlier.docx',file='earlier.docx',size=10,sha256='c'*64)
+        job=start(self.user,ready.pk,['sto','logic'],[str(self.rules.pk)],None,uuid.uuid4())
+        WorkerRun.objects.create(batch=ready,state='running',worker='new-native',local_id='ready-native')
+        claim=services.claim('unified',['review.execute','trace.suggest'],['context-budget-v5','visual-tail-v1','pipeline-v1'])
+        self.assertEqual(claim['payload']['job_id'],str(job.pk))
+        blocked=Command.objects.get(payload__job_id=str(newer.pk))
+        self.assertEqual(blocked.state,'pending');self.assertEqual(blocked.attempts,0)
+
+    def test_pipeline_claimed_native_without_local_job_keeps_normative_pending(self):
+        from portal.models import WorkerPresence
+        WorkerPresence.objects.create(name='new-native',state='idle',details={'pipeline_version':'pipeline-v1'})
+        job=self.launch();WorkerRun.objects.create(batch=self.batch,state='claimed',worker='new-native')
+        self.assertIsNone(services.claim('unified',['review.execute','trace.suggest'],['context-budget-v5','visual-tail-v1','pipeline-v1']))
+        command=Command.objects.get(payload__job_id=str(job.pk));self.assertEqual(command.attempts,0)
 
     def test_legacy_launch_still_waits_for_native(self):
         from .launch import dependency_ready

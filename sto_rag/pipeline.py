@@ -9,9 +9,15 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 VERSION='pipeline-v1'
-SYSTEM_RESERVE_MB=4096
+SYSTEM_RESERVE_MB=2048
 DOCUMENT_CACHE_CAP_MB=1024
 CPU_POOL=ThreadPoolExecutor(max_workers=2,thread_name_prefix='pipeline-cpu')
+
+class QueuePaused(InterruptedError):
+ """Resource admission was cancelled before model work; this is not a failure."""
+
+def waiting(ticket,callback):
+ if callback and callback(ticket):raise QueuePaused('Resource wait paused')
 
 def memory_mb():
  """Physical available RAM, including WSL usage on the Windows host."""
@@ -114,12 +120,15 @@ class Coordinator:
    if pipeline is None:db.execute('DELETE FROM tickets WHERE id=?',(identifier,))
    else:db.execute('DELETE FROM tickets WHERE id=? AND pipeline=?',(identifier,pipeline))
  @contextmanager
- def turn(self,pipeline,stage,resource,timeout=600,ram_mb=512):
-  ticket=self.ticket(pipeline,stage,resource,ram_mb=ram_mb);deadline=time.monotonic()+timeout;stop=threading.Event()
+ def turn(self,pipeline,stage,resource,timeout=600,ram_mb=512,on_wait=None):
+  # timeout remains accepted for callers; only actual work has a deadline.
+  ticket=self.ticket(pipeline,stage,resource,ram_mb=ram_mb);stop=threading.Event();last_notice=-float('inf')
   try:
    while ticket['state']!='running':
-    if time.monotonic()>deadline:raise TimeoutError('Resource queue timeout')
-    time.sleep(.1);ticket=self.ticket(pipeline,stage,resource,ticket['id'],ram_mb)
+    if time.monotonic()-last_notice>=1:
+     waiting(ticket,on_wait);last_notice=time.monotonic()
+    # Admission is backpressure, not an LLM attempt or a finite task deadline.
+    time.sleep(.25);ticket=self.ticket(pipeline,stage,resource,ticket['id'],ram_mb)
    lost=[]
    def renew():
     while not stop.wait(15):
@@ -142,23 +151,25 @@ def artifact_path(pipeline):
  if str(uuid.UUID(pipeline))!=pipeline:raise ValueError('Pipeline UUID')
  return DATA/'pipelines'/pipeline/'normative.json'
 
-def prepare_normative(pipeline,paths,prepared_paths):
+def prepare_normative(pipeline,paths,prepared_paths,on_wait=None):
  """CPU adapter reuses the inspected DOCX conversion, keeps original source IDs."""
  from knowledge_v2.review import corpus
  from nc5.common import write
  coordinator=host()
  try:
   coordinator.phase(pipeline,'normative_prepare','running')
-  with coordinator.turn(pipeline,'normative_prepare','cpu',ram_mb=preparation_mb(paths)):
+  with coordinator.turn(pipeline,'normative_prepare','cpu',ram_mb=preparation_mb(paths),on_wait=on_wait):
    docs=corpus(paths,prepared_paths=prepared_paths)
    write(artifact_path(pipeline),{'version':VERSION,'pipeline':pipeline,'documents':docs})
   coordinator.phase(pipeline,'normative_prepare','done')
+ except QueuePaused:
+  coordinator.phase(pipeline,'normative_prepare','paused');raise
  except Exception as error:
   coordinator.phase(pipeline,'normative_prepare','failed',type(error).__name__)
   raise
 
-def submit_preparation(pipeline,paths,prepared_paths):
- return CPU_POOL.submit(prepare_normative,pipeline,list(paths),dict(prepared_paths))
+def submit_preparation(pipeline,paths,prepared_paths,on_wait=None):
+ return CPU_POOL.submit(prepare_normative,pipeline,list(paths),dict(prepared_paths),on_wait)
 
 @contextmanager
 def remote_turn(client,stage='normative',resource='gpu',ram_mb=512):
@@ -169,14 +180,17 @@ def remote_turn(client,stage='normative',resource='gpu',ram_mb=512):
  def request(action,identifier=None):
   value={'pipeline':client.pipeline_id,'stage':stage,'resource':resource,'action':action,'ram_mb':ram_mb}
   if identifier:value['id']=identifier
+  transport=getattr(client,'pipeline_request',None)
+  if transport:return transport(value)
   headers={'Content-Type':'application/json','Authorization':'Bearer '+__import__('os').environ.get('NORMCONTROL_LLM_API_KEY','')}
   req=urllib.request.Request(endpoint+'/pipeline/ticket',data=json.dumps(value).encode(),headers=headers)
   with urllib.request.urlopen(req,timeout=15) as r:return json.load(r)
- ticket=request('acquire');stop=threading.Event();deadline=time.monotonic()+max(600,getattr(client,'timeout',300));thread=None;lost=[]
+ ticket=request('acquire');stop=threading.Event();thread=None;lost=[];last_notice=-float('inf')
  try:
   while ticket['state']!='running':
-   if time.monotonic()>deadline:raise TimeoutError('Unified GPU queue timeout')
-   time.sleep(.2);ticket=request('acquire',ticket['id'])
+   if time.monotonic()-last_notice>=1:
+    waiting(ticket,getattr(client,'_queue_wait',None));last_notice=time.monotonic()
+   time.sleep(.5);ticket=request('acquire',ticket['id'])
   def renew():
    while not stop.wait(15):
     try:

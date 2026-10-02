@@ -7,6 +7,7 @@ import uuid
 from datetime import timedelta
 from functools import wraps
 from django.db import transaction
+from django.conf import settings
 from django.http import JsonResponse,FileResponse,HttpResponse
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404,render

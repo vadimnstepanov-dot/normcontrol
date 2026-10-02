@@ -4,7 +4,7 @@ import posixpath
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from zipfile import ZipFile
+from word_source import open_archive as ZipFile
 from .ingest import W, parse_docx, element_text, normalize
 from .numbering import Numbering
 from .tables import cell, finalize, continuations

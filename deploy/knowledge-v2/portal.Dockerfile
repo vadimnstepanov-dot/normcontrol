@@ -8,6 +8,7 @@ COPY normcontrol-web/manage.py /app/manage.py
 COPY normcontrol-web/portal /app/portal
 COPY normcontrol-web/knowledge /app/knowledge
 COPY sto_rag/knowledge_v2 /app/knowledge_v2
+COPY sto_rag/pipeline.py sto_rag/token_cache.py sto_rag/word_source.py /app/
 COPY normcontrol-web/templates /app/templates
 COPY normcontrol-web/static /app/static
 RUN APP_DEBUG=1 APP_DATA=/data python manage.py collectstatic --noinput

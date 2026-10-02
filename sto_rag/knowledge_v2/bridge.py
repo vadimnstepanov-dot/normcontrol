@@ -49,7 +49,8 @@ class Bridge:
         request=urllib.request.Request(self.portal+path,data=json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode('utf-8'),
             headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
         # Claim is not idempotent. Retrying it could reserve another command.
-        safe=path in ('/worker/renew/','/worker/analysis/','/worker/coverage/','/worker/events/','/worker/authorize/')
+        safe=path in ('/worker/renew/','/worker/analysis/','/worker/coverage/','/worker/events/','/worker/authorize/',
+                      '/worker/checks/progress/')
         for attempt in range(5 if safe else 1):
             try:
                 with urllib.request.urlopen(request,timeout=30) as response:
@@ -110,9 +111,11 @@ class Bridge:
         else:capabilities.extend(['area.import','source.identify'])
         if os.getenv('KNOWLEDGE_SKIP_REVIEW')=='1' and os.getenv('KNOWLEDGE_REVIEW_ONLY')!='1':capabilities=[x for x in capabilities if x!='review.execute']
         capabilities.append('normative.search')
+        if os.getenv('KNOWLEDGE_SEARCH_ONLY')=='1':capabilities=['normative.search']
         from .model_profile import enabled as profile_control
         # A v5 worker must never resume a v4 model/transport snapshot.
         features=['context-budget-v5','check-log-v1','pipeline-v1','document-roles-v1']
+        if os.getenv('KNOWLEDGE_SEARCH_ONLY')=='1' or self.normative_index or (os.getenv('KNOWLEDGE_EMBEDDING_URL') and os.getenv('KNOWLEDGE_QDRANT_URL')):features.append('dialogue-rag-v1')
         if profile_control():features.append('visual-tail-v1')
         claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,'features':features})['command']
         if claim is None:return False
@@ -124,7 +127,12 @@ class Bridge:
             encoder,vector=self.normative_index or (RemoteEncoder(os.getenv('KNOWLEDGE_EMBEDDING_URL','http://127.0.0.1:8109')),QdrantIndex(os.getenv('KNOWLEDGE_QDRANT_URL','http://127.0.0.1:6333')))
             payload=claim['payload']
             def authorize(sid):return self.transport('/worker/authorize/',dict(user_id=payload['actor_id'],set_id=sid,action='read')).get('allowed') is True
-            found=HybridSearch(self.store,encoder,vector,authorize).reference(payload['release_id'],payload['query'],kinds=('requirement','term_definition'),profiles=payload.get('profiles'),limit=30)
+            if payload.get('dialogue_version'):
+                from .dialogue_search import VERSION,reference
+                if payload['dialogue_version']!=VERSION:raise ValueError('Dialogue retrieval version')
+                found=reference(self.store,encoder,vector,authorize,payload)
+            else:
+                found=HybridSearch(self.store,encoder,vector,authorize).reference(payload['release_id'],payload['query'],kinds=('requirement','term_definition'),profiles=payload.get('profiles'),limit=30)
             with self.store.connection() as db:
                 for row in found:
                     record=db.execute('SELECT payload FROM records WHERE id=? AND version=?',(row['record_id'],row['version'])).fetchone()
@@ -198,7 +206,10 @@ class Bridge:
             def renew_check():
                 while not stopped.wait(30):
                     try:self.transport('/worker/renew/',{'command_id':claim['command_id'],'lease':claim['lease']})
-                    except Exception:return
+                    except Exception:
+                        # A transient portal outage must not permanently stop renewal.
+                        # Definitive lease loss is rejected by the next progress/report.
+                        continue
             heartbeat=threading.Thread(target=renew_check,daemon=True);heartbeat.start()
             try:result=execute(self,claim,self.check_downloader,self.check_client,self.experience_index)
             except (ValueError,PermissionError):
@@ -383,10 +394,14 @@ def main():
         try:bridge.once()
         except Exception as e:
             # Only a type is logged: neither auth headers nor private payloads.
-            print('Knowledge command delivery failed: '+type(e).__name__,flush=True)
+            detail=type(e).__name__
+            if isinstance(e,urllib.error.HTTPError):
+                # Route and code locate the fault without exposing payloads or credentials.
+                detail+=f' status={e.code} path={urllib.parse.urlsplit(e.url).path}'
+            print('Knowledge command delivery failed: '+detail,flush=True)
             if args.once:raise SystemExit(1)
         if args.once:return
-        stopped.wait(5)
+        stopped.wait(1 if os.getenv('KNOWLEDGE_SEARCH_ONLY')=='1' else 5)
 
 
 if __name__=='__main__':main()

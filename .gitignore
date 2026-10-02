@@ -23,6 +23,13 @@ normcontrol-web/static-collected/
 *.env
 !*.env.example
 config.json
+*.pem
+*.key
+*.pfx
+*.p12
+*.ppk
+deploy/native-core/secrets/
+deploy/native-core/data/
 worker.env
 
 # Reports and temporary files

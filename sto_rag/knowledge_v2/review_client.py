@@ -12,7 +12,7 @@ from .review_wire import VERSION as WIRE_VERSION, GROUPED_VERSION, TRACE_REFS_VE
 
 
 class LlamaClient:
-    def __init__(self, endpoint, context=49152, output_tokens=4096, timeout=300,store=None, *, wire_version=WIRE_VERSION,pipeline_id=None):
+    def __init__(self, endpoint, context=49152, output_tokens=4096, timeout=300,store=None, *, wire_version=WIRE_VERSION,pipeline_id=None,queue_wait=None):
         if wire_version not in VERSIONS:raise ValueError('Unsupported normative transport')
         self.wire_version=wire_version
         parsed = urllib.parse.urlsplit(endpoint)
@@ -22,6 +22,7 @@ class LlamaClient:
         self.pipeline_id=pipeline_id;self.pipeline_endpoint=self.endpoint
         self.output_tokens, self.timeout = output_tokens, timeout
         self.store=store
+        self._queue_wait=queue_wait
         from .model_profile import enabled,ensure
         from contextlib import nullcontext
         from .model_queue import model_turn
@@ -160,45 +161,45 @@ class LlamaClient:
 
     @measured('v2.count')
     def count(self, payload):
-        if getattr(self,'pipeline_id',None) and not getattr(self,'_model_ticket',None) and checksum(payload) not in self._counts:
+        key=checksum([getattr(self,'signature',None),payload])
+        if key in self._counts:
+            observe('v2.count_cache_hit');return self._counts[key]
+        req=self.request(payload)
+        cache=self._persistent_counts()
+        saved=cache.get(getattr(self,'signature',None),req) if cache else None
+        if saved is not None:
+            self._remember_count(key,saved);observe('v2.count_persistent_hit');return saved
+        if getattr(self,'pipeline_id',None) and not getattr(self,'_model_ticket',None):
             from pipeline import remote_turn
             from .model_profile import ensure
             with remote_turn(self,'normative_tokenize',ram_mb=64):
-                ensure(self,'text');return self._count(payload)
-        return self._count(payload)
-    def _count(self, payload):
-        if len(self._counts)>1024:self._counts.clear()
-        key = checksum(payload)
+                ensure(self,'text');return self._count(payload,req)
+        return self._count(payload,req)
+    def _persistent_counts(self):
+        if not hasattr(self,'_token_cache'):
+            from token_cache import TokenCache
+            store=getattr(self,'store',None);self._token_cache=TokenCache(store.connection) if store is not None else None
+        return self._token_cache
+    def _remember_count(self,key,tokens):
+        if len(self._counts)>=1024:self._counts.clear()
+        self._counts[key]=tokens
+    def _count(self, payload,req=None):
+        key = checksum([getattr(self,'signature',None),payload])
         observe('v2.count_cache_hit' if key in self._counts else 'v2.count_cache_miss')
         if key not in self._counts:
-            req = self.request(payload)
-            store=getattr(self,'store',None)
-            cache_key=checksum([getattr(self,'signature',None),req])
-            if store is not None and getattr(self,'signature',None):
-                with store.connection() as db:
-                    db.execute('CREATE TABLE IF NOT EXISTS token_measurements(key TEXT PRIMARY KEY,tokens INTEGER NOT NULL,created REAL NOT NULL)')
-                    saved=db.execute('SELECT tokens FROM token_measurements WHERE key=?',(cache_key,)).fetchone()
-                if saved is not None:
-                    self._counts[key]=saved['tokens'];return saved['tokens']
+            req = req or self.request(payload)
             template = self.http('/apply-template', {'messages': req['messages'], 'chat_template_kwargs': {'enable_thinking': False}})['prompt']
             tokens = len(self.http('/tokenize', {'content': template, 'add_special': False})['tokens'])
-            schema_key=checksum(req['response_format'])
+            schema_key=checksum([getattr(self,'signature',None),req['response_format']])
             schema_counts=getattr(self,'_schema_counts',None)
             if schema_counts is None:self._schema_counts={};schema_counts=self._schema_counts
             if schema_key not in schema_counts:
-                if len(schema_counts)>128:schema_counts.clear()
+                if len(schema_counts)>=128:schema_counts.clear()
                 schema_counts[schema_key]=len(self.http('/tokenize', {'content': encode(req['response_format']), 'add_special': False})['tokens'])
             tokens += schema_counts[schema_key]
-            if len(self._counts) > 1024: self._counts.clear()
-            self._counts[key] = tokens
-            if store is not None and getattr(self,'signature',None):
-                import time
-                with store.connection() as db:
-                    db.execute('INSERT OR REPLACE INTO token_measurements VALUES(?,?,?)',(cache_key,tokens,time.time()))
-                    # Only hashes and integer counts persist, never prompt text.
-                    self._count_writes=getattr(self,'_count_writes',0)+1
-                    if self._count_writes%1000==0:
-                        db.execute('DELETE FROM token_measurements WHERE key IN (SELECT key FROM token_measurements ORDER BY created DESC LIMIT -1 OFFSET 40000)')
+            self._remember_count(key,tokens)
+            cache=self._persistent_counts()
+            if cache:cache.put(getattr(self,'signature',None),req,tokens)
         return self._counts[key]
 
     @measured('v2.complete')

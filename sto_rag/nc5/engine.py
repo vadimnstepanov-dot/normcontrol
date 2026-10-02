@@ -16,6 +16,7 @@ from .model import Client,BudgetError,OutputError,POLICY,SCHEMA,output_budget
 from .search import Index,terms
 from .store import Store,LRU
 from .runtime import Lease,BusyError,SleepInhibitor,implementation_hash
+from pipeline import QueuePaused
 from .evidence_context import rule_evidence,reference_payloads,reference_inventory,verification_context,restore_evidence_addresses,symbol_context,local_candidates,link_candidates
 
 STAGES=['language','logic','cross','inter','sto','verify']
@@ -28,7 +29,7 @@ def response_cache_key(client,payload):
 
 class Engine:
     def __init__(self,cfg=None,store=None):
-        self.config=cfg or config();self.store=store or Store();self.client=Client(self.config);self.lock=threading.Lock();self.cache=LRU(self.config['ram_bytes']);self.thread=None
+        self.config=cfg or config();self.store=store or Store();self.client=Client(self.config,store=self.store);self.lock=threading.Lock();self.cache=LRU(self.config['ram_bytes']);self.thread=None
     def create(self,paths,options=None,owner='local'):
         if not 1<=len(paths)<=20:raise ValueError('Нужен комплект из 1–20 документов')
         if load_catalog()['version']=='non-normative-empty-v1' and {**self.config,**(options or {})}.get('check_sto',True):
@@ -48,11 +49,13 @@ class Engine:
         coordinator=host();directions=data['options'].get('pipeline_directions',[])
         coordinator.register(pipeline,directions);coordinator.phase(pipeline,'material','running')
         try:
-            with coordinator.turn(pipeline,'material','cpu',ram_mb=preparation_mb(data['paths'])):self._prepare(jid)
+            with coordinator.turn(pipeline,'material','cpu',ram_mb=preparation_mb(data['paths']),on_wait=lambda ticket:self.store.job(jid)['state'] in ('paused','cancelled')):self._prepare(jid)
             if self.store.job(jid)['state'] in ('paused','cancelled'):
                 coordinator.phase(pipeline,'material','paused');return
             coordinator.phase(pipeline,'material','done')
             if 'formatting' in directions:coordinator.phase(pipeline,'formatting','done')
+        except QueuePaused:
+            coordinator.phase(pipeline,'material','paused');raise
         except Exception as error:
             if any(p['stage']=='material' and p['state']=='running' for p in coordinator.status(pipeline)):coordinator.phase(pipeline,'material','failed',type(error).__name__)
             raise
@@ -83,7 +86,7 @@ class Engine:
             pipeline=data['options']['pipeline_id'];host().phase(pipeline,'material','done')
             if 'sto' in data['options'].get('pipeline_directions',[]):
                 prepared={str(Path(d['source_path']).resolve()):d['path'] for d in docs}
-                self.preparation_future=submit_preparation(pipeline,data['paths'],prepared)
+                self.preparation_future=submit_preparation(pipeline,data['paths'],prepared,on_wait=lambda ticket:self.store.job(jid)['state'] in ('paused','cancelled'))
         from .planning import document_registry
         registries={doc['id']:document_registry(doc) for doc in docs}
         write(DATA/'jobs'/jid/'analysis-registry.json',registries)
@@ -114,6 +117,12 @@ class Engine:
                     else:data['limitations'].append('Визуальная проверка недоступна: сервер не поддерживает изображения')
                 for item in list(local_candidates(doc))+list(link_candidates(doc)):self.store.finding(jid,validate_finding(item,docs,cards),'candidate')
             if data['options'].get('check_language',True):
+                if data['options'].get('cpu_language_checks',True):
+                    from .formal_language import findings as formal_language_findings
+                    start=time.perf_counter();formal=list(formal_language_findings(doc))
+                    for item in formal:self.store.finding(jid,validate_finding(item,docs,cards),'confirmed')
+                    data.setdefault('cpu_language_coverage',[]).append({'document':doc['id'],'blocks':len(doc['blocks']),
+                        'findings':len(formal),'seconds':time.perf_counter()-start,'rule':'modal-requires-infinitive-v1'})
                 from .language_candidates import candidates as language_candidates
                 extra=language_candidates(doc);limit=max(1,int(data['options'].get('language_screen_limit',48)))
                 data.setdefault('language_screen',[]).append({'document':doc['id'],'candidates':len(extra),'queued':min(limit,len(extra))})
@@ -258,7 +267,8 @@ class Engine:
             sleep.__enter__()
             job=self.store.job(jid)
             self.config=copy.deepcopy(job['data']['options'])
-            if isinstance(self.client,Client):self.client=Client(self.config)
+            if isinstance(self.client,Client):self.client=Client(self.config,store=self.store)
+            self.client._queue_wait=lambda ticket:self.store.job(jid)['state'] in ('paused','cancelled')
             if self.config.get('pipeline_id'):
                 from pipeline import cache_budget
                 self.cache=LRU(cache_budget(self.config['ram_bytes']))
@@ -273,9 +283,15 @@ class Engine:
                 self.store.update(jid,'preparing');self.prepare(jid)
             else:
                 self.validate_resume(jid)
+                self.store.update(jid,'running')
                 self.client.probe()
                 if self.client.signature!=job['data']['model']['signature']:raise ValueError('Изменились модель или шаблон; создайте новую проверку вместо смешивания результатов')
                 self.store.update(jid,'running')
+                if self.config.get('pipeline_id') and 'sto' in self.config.get('pipeline_directions',[]):
+                    from pipeline import artifact_path,submit_preparation
+                    if not artifact_path(self.config['pipeline_id']).exists() and not (getattr(self,'preparation_future',None) and not self.preparation_future.done()):
+                        docs=self.material(jid);prepared={str(Path(d['source_path']).resolve()):d['path'] for d in docs}
+                        self.preparation_future=submit_preparation(self.config['pipeline_id'],job['data']['paths'],prepared,on_wait=self.client._queue_wait)
             for stage in STAGES:
                 if self.store.job(jid)['state']!='running':return
                 pipeline=job['data']['options'].get('pipeline_id')
@@ -295,6 +311,9 @@ class Engine:
                 visual_unknown=job['data']['options'].get('check_logic',True) and any(d['coverage'].get('images') or d['coverage'].get('objects') for d in job['data'].get('documents',[]))
                 incomplete=coverage_unknown or format_unknown or visual_unknown or any(t['state'] in ('failed','pending','running') or (t.get('result') or {}).get('invalid') for t in tasks) or bool(job['data']['limitations']) or any(f['status'] in ('candidate','verifying','question') for f in self.store.findings(jid))
                 self.store.update(jid,'partial' if incomplete else 'completed')
+        except QueuePaused:
+            # The owner has paused/cancelled admission; no incomplete model result.
+            if self.store.job(jid)['state'] not in ('paused','cancelled'):self.store.update(jid,'paused')
         except BusyError:
             # A second caller must not pause the job owned by the first process.
             self.store.event(jid,'worker_busy',{})
@@ -332,6 +351,8 @@ class Engine:
                 try:
                     self.store.event(jid,'generation_attempt',{'task':task['id'],'stage':task['stage'],'attempt':attempt+1})
                     raw,metrics=self.client.generate(task['payload']);result={'raw':raw,'metrics':metrics};break
+                except QueuePaused:
+                    self.store.defer(task,unstarted=attempt==0);return
                 except (OutputError,BudgetError) as e:
                     error=str(e)
                     diagnostic={'metrics':getattr(e,'metrics',{}),'finish_reason':(getattr(e,'response',{}).get('choices') or [{}])[0].get('finish_reason')}
@@ -352,6 +373,8 @@ class Engine:
                             if not parts:raise ValueError('Нет безопасной границы разбиения')
                             for part in parts:self.enqueue_bounded(jid,task['stage'],part,job['data'])
                             self.store.finish(task,{'split':True,**diagnostic},state='split');return
+                        except QueuePaused:
+                            self.store.defer(task,unstarted=False);return
                         except ValueError:pass
                     break
                 except Exception as e:error=str(e);self.store.event(jid,'attempt_error',{'task':task['id'],'attempt':attempt+1,'error':error[:300]})
@@ -361,7 +384,10 @@ class Engine:
             self.store.cache(task['cache_key'],result)
         if cached:
             emit('cached_response',dict(task_id=task['id'],response=result,cache_key=task['cache_key']))
-            result={**result,'reused_metrics':result.get('metrics',{}),'metrics':{'usage':{},'seconds':0,'estimated_tokens':self.client.count(task['payload'])}}
+            try:tokens=self.client.count(task['payload'])
+            except QueuePaused:
+                self.store.defer(task);return
+            result={**result,'reused_metrics':result.get('metrics',{}),'metrics':{'usage':{},'seconds':0,'estimated_tokens':tokens}}
         raw=copy.deepcopy(result['raw']);valid=[];invalid=[]
         allowed={(b['document'],b['locator']) for b in task['payload'].get('blocks',[])}
         from .planning import coalesce_row_findings,coverage_questions
@@ -520,7 +546,7 @@ class Engine:
             for d in docs:
                 if d.get('review_role')=='approved_reference':continue
                 for payload in reference_payloads(d,group_size=data['options'].get('reference_group_size',1)):self.enqueue_bounded(jid,stage,payload,data)
-        if stage=='inter' and len(docs)>1:
+        if stage=='inter' and len(docs)>1 and (data['options'].get('check_logic',True) or data['options'].get('check_sto',True)):
             byid={d['id']:d for d in docs}
             from .facts import normalize
             all_facts=[normalize(f) for t in self.store.tasks(jid,'logic') for f in (t['result'] or {}).get('facts',[])]

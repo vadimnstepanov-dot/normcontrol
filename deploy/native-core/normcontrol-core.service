@@ -1,0 +1,16 @@
+[Unit]
+Description=NormControl native worker, planner, queue and gateway
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/normcontrol/native-core
+ExecStart=/usr/bin/docker compose -f compose.yaml up -d
+ExecStop=/usr/bin/docker compose -f compose.yaml stop
+TimeoutStartSec=180
+TimeoutStopSec=420
+
+[Install]
+WantedBy=multi-user.target

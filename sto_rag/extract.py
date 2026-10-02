@@ -3,7 +3,7 @@ from collections import defaultdict, deque
 import hashlib
 import json
 from pathlib import Path
-from zipfile import ZipFile
+from word_source import open_archive as ZipFile
 import re
 import xml.etree.ElementTree as ET
 

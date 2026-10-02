@@ -10,7 +10,7 @@ from .models import AccessProfile,Batch,Document,WorkerRun,Conversation,ChatMess
 from .tests import document
 from .chat import intent
 
-@override_settings(KNOWLEDGE_V2_ENABLED=False)
+@override_settings(KNOWLEDGE_V2_ENABLED=False,CHAT_MODEL_BACKGROUND=False)
 class ChatTests(TestCase):
     def setUp(self):
         self.user=User.objects.create_user('chat-owner');self.other=User.objects.create_user('other-chat-owner')
@@ -140,6 +140,11 @@ class ChatTests(TestCase):
         r=self.client.get(self.url).json();self.assertFalse(r['state']['complete']);self.assertIn('неполным',r['state']['text'])
     def test_running_no_file_or_false_ready(self):
         self.post();r=self.client.get(self.url).json();self.assertFalse(r['state']['terminal']);self.assertEqual(r['state']['exports'],[])
+    def test_ram_backpressure_is_visible_without_claiming_a_task_failure(self):
+        b=Batch.objects.create(owner=self.user,name='Ожидание памяти',checks=['logic'],status='running');self.c.batch=b;self.c.save()
+        WorkerRun.objects.create(batch=b,state='running',snapshot={'pipeline_resources':{'available_mb':2700,'reserve_mb':4096,'queue':[{'state':'waiting','waiting_reason':'ram','ram_mb':512}]}},report={})
+        state=self.client.get(self.url).json()['state']
+        self.assertIn('Ожидание памяти',state['text']);self.assertIn('4096',state['text']);self.assertFalse(state['terminal']);self.assertIn('pause',state['actions'])
         self.assertEqual(self.client.get(self.url+'export/xlsx/').status_code,409)
     def test_clock_survives_page_reload_and_stops_for_terminal_review(self):
         now=timezone.now();started=(now-timedelta(seconds=214)).timestamp()

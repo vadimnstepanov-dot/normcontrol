@@ -127,6 +127,15 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.runner.report(task)['state'],'done')
         self.assertFalse(self.runner.run_once())
         self.assertEqual(len(self.model.calls),2)
+    def test_queue_pause_saves_cursor_without_failure_or_attempt(self):
+        from pipeline import QueuePaused
+        task=self.create();self.model.hook=lambda:(_ for _ in ()).throw(QueuePaused())
+        self.runner.run_once(task)
+        with self.store.connection() as db:saved=dict(db.execute('SELECT * FROM tasks WHERE id=?',(task,)).fetchone())
+        self.assertEqual(saved['state'],'pending');self.assertEqual(saved['attempts'],0)
+        self.assertFalse(json.loads(saved['cursor']).get('failures'));self.assertIsNone(saved['lease'])
+        self.model.hook=None;self.runner.pause(task,False);self.runner.run_once(task)
+        self.assertEqual(self.runner.report(task)['state'],'done')
 
     def test_model_change_refuses_resume(self):
         self.create();self.model.signature='model-b'

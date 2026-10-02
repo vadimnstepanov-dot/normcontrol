@@ -1,0 +1,15 @@
+{
+  "host": "0.0.0.0",
+  "port": 8098,
+  "token": "REPLACE_QUEUE_TOKEN",
+  "upstream": "https://192.0.2.10:8123",
+  "host_token_file": "/run/secrets/host.token",
+  "certificate": "/run/secrets/gateway.crt",
+  "private_key": "/run/secrets/gateway.key",
+  "allowed_networks": [
+    "127.0.0.1/32",
+    "172.16.0.0/12",
+    "192.0.2.20/32"
+  ],
+  "timeout": 360
+}

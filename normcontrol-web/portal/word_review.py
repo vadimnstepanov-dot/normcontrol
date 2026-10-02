@@ -5,7 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile,ZIP_DEFLATED
 from lxml import etree as E
 
-VERSION='word-review-v3'
+VERSION='word-review-v4'
 W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';Q='{'+W+'}'
 NS={'w':W};R='http://schemas.openxmlformats.org/package/2006/relationships'
 CT='http://schemas.openxmlformats.org/package/2006/content-types'
@@ -84,7 +84,7 @@ def comment_message(f,reason,reference_evidence):
  suggestion=str(f.get('suggestion') or 'Уточнить содержание и зафиксировать решение специалиста.')
  # A prior review may describe a completed edit; here it is still a proposal.
  if suggestion.startswith('Заменено:'):suggestion='Заменить:'+suggestion[len('Заменено:'):]
- lines=[str(f['id'])+' | '+labels.get(f.get('status'),str(f.get('status','')))+' | '+str(f.get('issue','')),
+ lines=[labels.get(f.get('status'),str(f.get('status','')))+' | '+str(f.get('issue','')),
   str(f.get('explanation','')),'Предложение: '+suggestion]
  # Routine export diagnostics belong to the application report, not balloons.
  if reason and reason!='Нет проверенной структурированной редакции; свободное предложение не применяется' and reason!='Пробелы сопоставлены с исходными символами':lines.append('Ограничение: '+reason)
@@ -102,11 +102,11 @@ def comment_message(f,reason,reference_evidence):
   else:lines.append('Основание: в результате проверки не указано; требуется уточнение специалиста.')
  return '\n'.join(x for x in lines if x)
 
-def plan(source,working,document,result_version,findings,decisions=None,proposals=None,include_preliminary=False,include_style=False):
+def plan(source,working,document,result_version,findings,decisions=None,proposals=None,include_preliminary=False,include_style=False,*,root=None):
  """Programmatically validate specialist-approved structured proposals before rendering."""
  decisions=decisions or {};proposals=proposals or {};source_hash=sha(source);working_hash=sha(working)
  if source_hash!=document['source_sha256'] or working_hash!=document['working_sha256']:raise ReviewError('Хеш исходника или рабочей копии изменился; требуется новая проверка')
- root=load(working);ps=paragraphs(root);operations=[];outcomes=[]
+ root=load(working) if root is None else root;ps=paragraphs(root);operations=[];outcomes=[]
  aliases=set(document['aliases']);references=set(document.get('reference_aliases',[]))
  for f in findings:
   fid=str(f['id']);status=f.get('status');evidence=[e for e in f.get('evidence',[]) if str(e.get('document',e.get('document_id',''))) in aliases]

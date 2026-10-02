@@ -256,7 +256,7 @@ def corpus(paths,prepared_paths=None):
         gaps = [c for c in parsed['coverage'] if c.get('reason') not in ordinary]
         facts = [dict(block_id=b['id'], values=re.findall(r'\d+(?:[.,]\d+)?(?:\s*[%а-яА-Яa-zA-Z]+)?', b['text']))
                  for b in blocks if re.search(r'\d', b['text'])]
-        docs.append(dict(id=before, name=path.name, sha256=before, parser=PARSER_VERSION,
+        docs.append(dict(id=before, name=path.name, sha256=before, parser=parsed.get('parser_version',PARSER_VERSION),
                          blocks=blocks, gaps=gaps, facts=facts, classification=parsed['classification']))
     if not docs or len({d['id'] for d in docs}) != len(docs): raise ValueError('Nonempty distinct documents required')
     return docs
@@ -691,6 +691,11 @@ class ReviewRunner:
                         # The durable local cursor is authoritative during a portal outage.
                         pass
             self.store.checkpoint(task['id'], task['lease'], cursor, done=True)
+        except __import__('pipeline').QueuePaused:
+            self.store.checkpoint(task['id'],task['lease'],cursor)
+            with self.store.connection() as db:
+                db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND lease=?",(task['id'],task['lease']))
+                db.execute('INSERT INTO review_controls VALUES(?,1) ON CONFLICT(task_id) DO UPDATE SET paused=1',(task['id'],))
         except Exception as exc:
             if not lost.is_set(): self.store.fail_task(task['id'], task['lease'], str(exc), permanent=isinstance(exc, (Conflict, PermissionError, NotReady)))
             raise

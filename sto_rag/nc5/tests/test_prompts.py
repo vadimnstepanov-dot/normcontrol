@@ -1,10 +1,26 @@
 import unittest
 from nc5.common import DEFAULT_CONFIG
 from nc5.model import Client, output_budget
-from nc5.prompts import COMMON, NUMERIC, STAGES, POLICY, stage_policy
+from nc5.prompts import COMMON, NUMERIC, NUMERIC_BRIEF, STAGES, POLICY, stage_policy
 
 
 class PromptContracts(unittest.TestCase):
+    def test_brief_numeric_policy_is_confined_to_formula_blocks(self):
+        cfg=dict(DEFAULT_CONFIG);client=Client(cfg)
+        blocks=[{'document':'d','locator':'p1','text':'Относительный прирост — разность к базовому значению.'},
+                {'document':'d','locator':'p0','text':'При отсутствии числителя или знаменателя относительный показатель передаётся как null.'},
+                {'document':'d','locator':'p2','text':'100-(D29/D28*100)','table':{'table':1,'column':2}}]
+        payload={'stage':'logic','blocks':blocks,'requirements':[]}
+        prompt=client.request(payload)['messages'][0]['content']
+        self.assertIn(NUMERIC_BRIEF,prompt)
+        self.assertIn(COMMON,prompt);self.assertIn(STAGES['logic'],prompt);self.assertIn(NUMERIC,prompt)
+        self.assertIn(NUMERIC_BRIEF,client.request({**payload,'stage':'cross'})['messages'][0]['content'])
+        for alternative in [{**payload,'stage':'language'},{**payload,'stage':'inter'},
+                {**payload,'blocks':blocks+[{'document':'d','locator':'p3','text':'Обработка персональных данных запрещена до создания подсистемы защиты.'}]}]:
+            self.assertNotIn(NUMERIC_BRIEF,client.request(alternative)['messages'][0]['content'])
+        client=Client({**cfg,'numeric_brief_explanation':False})
+        self.assertNotIn(NUMERIC_BRIEF,client.request(payload)['messages'][0]['content'])
+
     def test_stage_isolation_and_request(self):
         client = Client(dict(DEFAULT_CONFIG))
         for stage in STAGES:

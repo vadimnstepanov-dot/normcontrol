@@ -1,7 +1,7 @@
 """Build structural review units from one DOCX without legacy review services."""
 import copy
 import re
-from zipfile import ZipFile
+from word_source import open_archive as ZipFile
 
 from document_locations import build_locations, verified_rows
 from extract import Numbering, clean

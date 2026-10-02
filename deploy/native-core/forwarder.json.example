@@ -1,0 +1,22 @@
+{
+  "distro": "NormControl",
+  "ports": [
+    {
+      "host": "127.0.0.1",
+      "port": 8096,
+      "target_port": 8096,
+      "allowed_clients": [
+        "127.0.0.1"
+      ]
+    },
+    {
+      "host": "192.0.2.10",
+      "port": 8098,
+      "target_port": 8098,
+      "allowed_clients": [
+        "192.0.2.10",
+        "192.0.2.20"
+      ]
+    }
+  ]
+}

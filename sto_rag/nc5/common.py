@@ -26,6 +26,7 @@ def write(path, value):
 DEFAULT_CONFIG = dict(endpoint='http://127.0.0.1:8082', model='local-qwen', context=49152,
     output=4096, margin=1536, timeout=300, retries=1, ram_bytes=8*1024**3,
     port=8096, formatting='off', check_language=True, check_logic=True, check_sto=True,
+    cpu_language_checks=True, numeric_brief_explanation=True,
     language_chunk_chars=14000, logic_chunk_chars=12000, reference_group_size=3,
     verification_group_size=3, sto_group_size=10, sto_group_chars=52000,
     max_file_bytes=50*1024**2, max_unpacked_bytes=200*1024**2)

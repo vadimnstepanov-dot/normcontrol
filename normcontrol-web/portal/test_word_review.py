@@ -103,9 +103,13 @@ class WordReviewUnitTests(UnitTestCase):
   f=finding();f['suggestion']='Заменить ошибка на произвольный текст';draft=self.draft([f]);self.assertEqual(self.generate(draft)[1]['edits'],0)
  def test_reference_presentation_preserves_meaning_and_revision_order(self):
   f=finding();f['suggestion']='Заменено: ошибка → верно.'
-  draft=self.draft([f]);self.assertIn('F-1 | Подтверждено | Ошибка в тексте',draft['operations'][0]['comment'])
+  draft=self.draft([f]);self.assertTrue(draft['operations'][0]['comment'].startswith('Подтверждено | Ошибка в тексте\n'))
   self.assertIn('Предложение: Заменить:',draft['operations'][0]['comment']);self.assertNotIn('свободное предложение',draft['operations'][0]['comment'])
   approved=self.draft([f],proposals={'F-1':self.approved(draft,'верно')});out,report,root=self.generate(approved)
+  self.assertEqual(report['operations'][0]['finding_ids'],['F-1'])
+  with ZipFile(out) as z:
+   comments=wr.xml(z.read('word/comments.xml'));header=''.join(comments.xpath('w:comment/w:p[1]//w:t/text()',namespaces=wr.NS))
+   self.assertEqual(header,'Подтверждено | Ошибка в тексте')
   p=wr.paragraphs(root)[0];revisions=[n.tag for n in p if n.tag in (wr.Q+'del',wr.Q+'ins')]
   self.assertEqual(revisions[-1],wr.Q+'ins');self.assertTrue(all(n==wr.Q+'del' for n in revisions[:-1]))
   self.assertEqual(p.find('.//'+wr.Q+'commentReference').getparent().find(wr.Q+'rPr/'+wr.Q+'rStyle').get(wr.Q+'val'),'CommentReference')

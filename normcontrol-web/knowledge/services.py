@@ -302,6 +302,7 @@ def claim(worker_id, capabilities, features=()):
             SourceUpload.objects.filter(pk=c.payload['source_id']).update(state='error' if c.state=='failed' else 'queued',
                 result={'reason':'attempts_exhausted'} if c.state=='failed' else {})
     for c in Command.objects.select_for_update().filter(state='pending',kind__in=capabilities).order_by('created','id'):
+        if c.kind=='normative.search' and c.payload.get('dialogue_version') and c.payload['dialogue_version'] not in features:continue
         if c.kind=='review.execute':
             if any(d.get('review_role')=='approved_reference' for d in c.payload.get('documents',[])) and 'document-roles-v1' not in features:continue
             if c.payload.get('pipeline_version')=='pipeline-v1' and 'pipeline-v1' not in features:continue

@@ -3,7 +3,7 @@ import uuid
 from datetime import timedelta
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from .models import Batch, WorkerRun
+from .models import Batch, WorkerRun, ChatResponse
 
 
 def pending_demand(after=None):
@@ -11,6 +11,10 @@ def pending_demand(after=None):
     if after:batches=batches.filter(created__gt=after)
     batch=batches.order_by('queue_position','created').first()
     if batch:return 'batch:'+str(batch.pk)
+    responses=ChatResponse.objects.filter(state__in=['queued','running'],user_message__conversation__owner__is_active=True)
+    if after:responses=responses.filter(created__gt=after)
+    response=responses.order_by('created').first()
+    if response:return 'chat:'+str(response.pk)
     from django.apps import apps
     if not apps.is_installed('knowledge'):return None
     from knowledge.models import Command, KnowledgeCheck
@@ -27,6 +31,10 @@ def pending_demand(after=None):
 
 
 def queue_start(runtime,now=None):
+    if ChatResponse.objects.filter(state__in=['queued','running']).exists():
+        from django.db import transaction
+        from .chat_model import kick
+        transaction.on_commit(kick)
     now=now or timezone.now()
     command=dict(runtime.command or {})
     if command.get('state')=='pending':return command

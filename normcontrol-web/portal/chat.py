@@ -1,6 +1,6 @@
 """Small persisted control surface over canonical intake, controls and exports.
 
-No model inference, user supplied paths, command names or remote URLs here.
+Dialogue is queued separately; document reviews still use canonical intake.
 """
 import json,re,uuid,math
 from datetime import datetime,timezone as dt_timezone
@@ -49,7 +49,9 @@ def owned(user,cid):return get_object_or_404(Conversation,pk=cid,owner=user)
 def intent(text):
     value=text.casefold().strip()
     if not re.search(r'\b(проверь\w*|проверить|запусти\w*|начни)\b',value):
-        return 'details' if re.search(r'замечани|подробн|реестр',value) else 'status'
+        if re.search(r'^(покажи|открой|скачай|скачать|подробный разбор|реестр)\b.*(замечани|подробн|реестр|word|excel|отч[её]т)|^покажи замечания',value):return 'details'
+        if re.search(r'^(какой |каков |покажи |показать |где |что со |что с )?(статус|состояние|прогресс)\b|^скачать\b|^как (ид[её]т|продвигается) проверка',value):return 'status'
+        return 'dialogue'
     explicit=[]
     for key,pattern in [('sto',r'\bсто\b|норматив'),('logic',r'логик'),('language',r'граммат|грамот|язык|терминолог|орфограф'),('formatting',r'оформлен')]:
         if re.search(pattern,value):explicit.append(key)
@@ -114,6 +116,10 @@ def compact(user,conversation):
     # Only factual planned task totals, never estimated stage percentages.
     run=WorkerRun.objects.filter(batch=batch).first()
     native=run.snapshot if run else {}
+    resources=native.get('pipeline_resources',{})
+    ram_waiters=[q for q in resources.get('queue',[]) if q.get('waiting_reason')=='ram']
+    if not terminal and batch.status in ('running','preparing') and ram_waiters:
+        text+=f"\nОжидание памяти: доступно {resources.get('available_mb',0)} МиБ; резерв {resources.get('reserve_mb',4096)} МиБ; задача требует ещё {min(q.get('ram_mb',512) for q in ram_waiters)} МиБ. Проверка продолжится автоматически после освобождения памяти."
     stages=native.get('stages',{})
     total=sum(sum(int(n) for n in s.values() if isinstance(n,int)) for s in stages.values() if isinstance(s,dict))
     done=sum(int(s.get('done',0))+int(s.get('failed',0)) for s in stages.values() if isinstance(s,dict))
@@ -133,7 +139,7 @@ def serialize(user,c):
         existing=c.messages.filter(key=PROGRESS_KEY).first()
         if not existing or existing.text!=values['text'] or existing.metadata!=values['metadata']:
             ChatMessage.objects.update_or_create(conversation=c,key=PROGRESS_KEY,defaults=values)
-    return {'id':str(c.pk),'title':c.title,'draft':c.draft,'batch':str(c.batch_id) if c.batch_id else None,
+    return {'id':str(c.pk),'title':c.title,'draft':c.draft,'batch':str(c.batch_id) if c.batch_id else None,'server_time':timezone.now().timestamp(),
             'messages':[{'id':m.pk,'role':m.role,'text':m.text,'metadata':m.metadata} for m in c.messages.all()], 'state':state}
 
 @login_required
@@ -181,7 +187,7 @@ def conversations(request):
     existing=list(Conversation.objects.filter(owner=request.user).select_related('batch').order_by('-updated')[:100])
     represented={c.batch_id for c in existing}
     imports=[{'batch':str(b.pk),'title':b.name,'state':b.get_status_display()} for b in Batch.objects.filter(owner=request.user,archived=False).exclude(pk__in=represented).order_by('-created')[:100-len(existing)]]
-    return JsonResponse({'items':[{'id':str(c.pk),'title':c.title,'state':c.batch.get_status_display() if c.batch else 'Черновик'} for c in existing]+imports})
+    return JsonResponse({'items':[{'id':str(c.pk),'title':c.title,'state':c.batch.get_status_display() if c.batch else 'Диалог' if c.messages.exists() else 'Черновик'} for c in existing]+imports})
 
 @login_required
 @checked_input
@@ -189,10 +195,19 @@ def conversation(request,cid):
     c=owned(request.user,cid)
     if request.method=='POST':
         data=json.loads(request.body)
-        # File bytes and browser paths are deliberately never persisted as draft.
-        c.draft={k:data[k] for k in ('text','checks','normative_sets','roles','experience') if k in data}
-        if len(json.dumps(c.draft,ensure_ascii=False))>12000:return JsonResponse({'error':'Черновик слишком велик'},status=400)
-        c.save(update_fields=['draft','updated'])
+        with transaction.atomic():
+            c=Conversation.objects.select_for_update().get(pk=c.pk)
+            if 'message_id' in data:
+                version=data['message_id']
+                if type(version) is not int or version<0:return JsonResponse({'error':'Некорректная версия черновика'},status=400)
+                latest=c.messages.order_by('-id').values_list('pk',flat=True).first() or 0
+                if version!=latest:return JsonResponse({'error':'Черновик устарел после отправки сообщения.'},status=409)
+            # File bytes and browser paths are deliberately never persisted as draft.
+            c.draft={k:data[k] for k in ('text','checks','normative_sets','roles','experience','mode') if k in data}
+            if len(json.dumps(c.draft,ensure_ascii=False))>12000:return JsonResponse({'error':'Черновик слишком велик'},status=400)
+            c.save(update_fields=['draft','updated'])
+    from .chat_model import recover,kick
+    recover();transaction.on_commit(kick)
     return JsonResponse(serialize(request.user,c))
 
 @login_required
@@ -209,13 +224,6 @@ def send(request,cid):
         if old:
             if old.text!=text:return JsonResponse({'error':'Это сообщение уже принято с другим текстом.'},status=409)
             if not old.metadata.get('pending'):return JsonResponse(serialize(request.user,c))
-        action=intent(text)
-        if isinstance(action,str) or c.batch_id:
-            c.messages.create(key=key,role='user',text=text)
-            reply='Подробный разбор доступен через нижний переключатель «Эксперт».' if action=='details' else 'Состояние проверки показано ниже.' if c.batch_id else 'Прикрепите документы и напишите «Проверь». Для запуска нужны явно выбранные роли документов.'
-            if c.batch_id and isinstance(action,list):reply='Для нового запуска используйте «Повторить» или начните новую переписку. Существующий результат сохранён.'
-            c.messages.create(role='assistant',text=reply)
-            return JsonResponse(serialize(request.user,c))
         files=request.FILES.getlist('documents')
         def clarify(question):
             c.messages.get_or_create(key=key,defaults={'role':'user','text':text,'metadata':{'pending':True}})
@@ -223,6 +231,25 @@ def send(request,cid):
             return JsonResponse({'clarification':question,'conversation':serialize(request.user,c)},status=422)
         try:config=json.loads(request.POST.get('config','{}'))
         except ValueError:return JsonResponse({'error':'Некорректные параметры'},status=400)
+        if not isinstance(config,dict):return JsonResponse({'error':'Некорректные параметры'},status=400)
+        mode=config.get('mode','auto')
+        if mode not in ('auto','dialogue','review'):return JsonResponse({'error':'Неизвестный режим сообщения'},status=400)
+        action='dialogue' if mode=='dialogue' else intent(text)
+        if mode=='review' and isinstance(action,str):action=['sto','logic','language']
+        if files and mode=='auto' and action=='dialogue':action=['sto','logic','language']
+        if action=='dialogue':
+            if files:return clarify('Вложения используются в проверке документов. Выберите «Проверка» или отправьте вопрос модели без вложений.')
+            from .chat_model import enqueue,kick
+            try:enqueue(c,key,text)
+            except ValueError as error:return JsonResponse({'error':str(error)},status=409)
+            transaction.on_commit(kick)
+            return JsonResponse(serialize(request.user,c))
+        if isinstance(action,str) or c.batch_id:
+            c.messages.update_or_create(key=key,defaults={'role':'user','text':text,'metadata':{}})
+            reply='Подробный разбор доступен через переключатель «Эксперт» на верхней панели.' if action=='details' else 'Состояние проверки показано ниже.' if c.batch_id else 'Прикрепите документы и напишите «Проверь». Для запуска нужны явно выбранные роли документов.'
+            if c.batch_id and isinstance(action,list):reply='Для нового запуска используйте «Повторить» или начните новую переписку. Существующий результат сохранён.'
+            c.messages.create(role='assistant',text=reply)
+            return JsonResponse(serialize(request.user,c))
         roles=config.get('roles',[])
         if not files:return clarify('Прикрепите документ для проверки.')
         if len(roles)!=len(files) or any(r not in ('target','approved_reference') for r in roles) or 'target' not in roles:
@@ -246,6 +273,23 @@ def send(request,cid):
         c.messages.update_or_create(key=key,defaults={'role':'user','text':text,'metadata':{'documents':[{'id':d.pk,'name':d.name,'role':d.review_role} for d in batch.documents.order_by('id')],'checks':batch.checks,'normative_sets':sets}})
         names=dict(CHECKS);basis=', '.join(f.name for f,r in zip(files,roles) if r=='approved_reference') or 'не приложены'
         c.messages.create(role='assistant',text='Запуск принят. '+', '.join(names[k] for k in batch.checks)+'.\nОснования: '+basis+'.\nНормативная база: '+(', '.join(n['name'] for n in selected['norms'] if n['id'] in sets) or 'не используется')+'.',metadata={'kind':'launch','batch':str(batch.pk)})
+    return JsonResponse(serialize(request.user,c))
+
+@login_required
+@require_POST
+@checked_input
+def model_action(request,cid):
+    c=owned(request.user,cid)
+    if c.batch_id:visible_batch(request.user,c.batch_id)
+    from .models import ChatResponse
+    from .chat_model import action,kick
+    data=json.loads(request.body)
+    try:pk=uuid.UUID(data.get('response',''))
+    except ValueError:return JsonResponse({'error':'Некорректный идентификатор ответа'},status=400)
+    get_object_or_404(ChatResponse,pk=pk,user_message__conversation=c)
+    try:action(c,pk,data.get('action'))
+    except ValueError as error:return JsonResponse({'error':str(error)},status=409)
+    transaction.on_commit(kick)
     return JsonResponse(serialize(request.user,c))
 
 @login_required

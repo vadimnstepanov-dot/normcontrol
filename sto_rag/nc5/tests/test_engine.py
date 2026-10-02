@@ -21,6 +21,23 @@ class Fake:
         return raw,{'seconds':0,'usage':{},'estimated_tokens':1000}
 
 class EngineTests(unittest.TestCase):
+    def test_grammar_only_does_not_schedule_other_stages(self):
+        ref=self.root/'reference.docx';d=Document();d.add_paragraph('ТЕХНИЧЕСКОЕ ЗАДАНИЕ');d.add_paragraph('Обновление должно выполнятся.');d.save(ref)
+        options={'check_sto':False,'check_logic':False,'check_language':True,
+                 'document_roles':{str(ref.resolve()):'approved_reference',str(self.path.resolve()):'target'}}
+        j=self.e.create([str(self.path),str(ref)],options);self.e.run(j)
+        self.assertTrue(self.e.store.tasks(j,'language'))
+        self.assertFalse([t for t in self.e.store.tasks(j) if t['stage'] not in ('language','verify')])
+        self.assertFalse([f for f in self.e.store.findings(j) if f.get('cpu_rule')])
+
+    def test_proven_cpu_finding_bypasses_verification(self):
+        d=Document();d.add_paragraph('Обновление должно выполнятся.');d.save(self.path)
+        j=self.e.create([str(self.path)],{'check_sto':False,'check_logic':False});self.e.run(j)
+        fs=[f for f in self.e.store.findings(j) if f.get('cpu_rule')]
+        self.assertEqual(len(fs),1);self.assertEqual(fs[0]['status'],'confirmed')
+        self.assertFalse(self.e.store.tasks(j,'verify'))
+        self.assertEqual(self.e.store.job(j)['data']['cpu_language_coverage'][0]['findings'],1)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
         runtime=patch('nc5.engine.DATA',self.root/'runtime');runtime.start();self.addCleanup(runtime.stop)

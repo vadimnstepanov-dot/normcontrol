@@ -14,6 +14,8 @@ KNOWLEDGE_WORKER_ID=os.getenv('NORMCONTROL_KNOWLEDGE_WORKER_ID','knowledge-worke
 KNOWLEDGE_SNAPSHOT_VERSIONS={'engine':'knowledge-v2-foundation','runtime_binding':'pending-stage6','response_schema':'foundation-v1'}
 MIDDLEWARE=['django.middleware.security.SecurityMiddleware','django.contrib.sessions.middleware.SessionMiddleware','django.middleware.common.CommonMiddleware','django.middleware.csrf.CsrfViewMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware','portal.middleware.PasswordChangeMiddleware','django.contrib.messages.middleware.MessageMiddleware','django.middleware.clickjacking.XFrameOptionsMiddleware','portal.middleware.HeadersMiddleware']
 MIDDLEWARE.append('portal.middleware.PresentationMiddleware')
+MIDDLEWARE.insert(1,'portal.maintenance.MaintenanceMiddleware')
+MAINTENANCE_PUBLIC_DIR=os.getenv('NORMCONTROL_MAINTENANCE_PUBLIC_DIR','')
 if os.getenv('APP_STATIC_SELF_SERVE')=='1':MIDDLEWARE.insert(1,'whitenoise.middleware.WhiteNoiseMiddleware')
 ROOT_URLCONF='portal.urls'
 TEMPLATES=[{'BACKEND':'django.template.backends.django.DjangoTemplates','DIRS':[BASE_DIR/'templates'],'APP_DIRS':True,'OPTIONS':{'context_processors':['django.template.context_processors.request','django.contrib.auth.context_processors.auth','django.contrib.messages.context_processors.messages','portal.views.common']}}]

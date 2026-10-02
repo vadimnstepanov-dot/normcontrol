@@ -9,6 +9,7 @@ from pathlib import Path
 from .review import ReviewRunner,corpus,release_records
 from .review_client import LlamaClient
 from .store import checksum,Conflict,NotReady
+from pipeline import QueuePaused
 
 
 from .check_log import logged,emit
@@ -19,24 +20,47 @@ class PreparationPaused(Exception):pass
 @logged
 def execute(bridge,claim,download,client=None,experience_index=None):
     try:return _execute(bridge,claim,download,client,experience_index)
-    except PreparationPaused:
+    except (PreparationPaused,QueuePaused) as interrupted:
         payload=claim['payload'];store=bridge.store
         with store.connection() as db:
-            if db.execute("SELECT 1 FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone():raise
+            saved=db.execute("SELECT id FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone()
+            if saved and isinstance(interrupted,PreparationPaused):raise
+            if saved:
+                db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND state='running'",(saved[0],))
+                db.execute('INSERT INTO review_controls VALUES(?,1) ON CONFLICT(task_id) DO UPDATE SET paused=1',(saved[0],))
         result=dict(kind='review.execute.done',set_id=payload['set_id'],job_id=payload['job_id'],
-            task_id=None,state='paused',finding_count=0,findings_digest=checksum([]),
-            limitations=['Планирование остановлено пользователем до сохранения плана.'])
+            task_id=saved[0] if saved else None,state='paused',finding_count=0,findings_digest=checksum([]),
+            limitations=['Ожидание ресурсов остановлено. Сохранённые ответы и контрольная точка сохранены.'])
         return store.remember_result(claim['command_id'],'review.execute',payload,result)
 
 def _execute(bridge,claim,download,client=None,experience_index=None):
     payload=claim['payload'];store=bridge.store
+    last_progress=None;last_wait_notice=-float('inf')
+    def send_progress(value):
+        nonlocal last_progress
+        last_progress=dict(value)
+        return bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],job_id=payload['job_id'],progress=value))
+    def queue_wait(ticket):
+        nonlocal last_wait_notice
+        if bridge.stop_event.is_set():return True
+        if time.monotonic()-last_wait_notice<5:return False
+        last_wait_notice=time.monotonic()
+        if not last_progress:return False
+        waiting='Ожидание памяти' if ticket.get('waiting_reason')=='ram' else 'Ожидание свободного процессора/модели'
+        if ticket.get('waiting_reason')=='ram':waiting+=f": доступно {ticket['available_mb']} МиБ; резерв {ticket['reserve_mb']} МиБ; задача {ticket['ram_mb']} МиБ"
+        return send_progress(dict(last_progress,operation=waiting)).get('pause_requested') is True
     if checksum(payload['snapshot'])!=payload['snapshot_digest']:raise Conflict('Portal snapshot digest')
     def preparing(stage,operation,**details):
+        nonlocal last_progress
         with store.connection() as db:
-            if db.execute("SELECT 1 FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone():return False
-        response=bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],
-            job_id=payload['job_id'],progress=dict(task_id=None,completed=0,total=None,percent=0,eta_seconds=None,
-                preview=[],stage=stage,operation=operation,**details)))
+            saved=db.execute("SELECT id,cursor,json_array_length(payload,'$.batches') FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone()
+            if saved:
+                if last_progress is None:
+                    cursor=json.loads(saved[1]);done=len(cursor.get('results',{}))+len(cursor.get('failures',{}));total=saved[2] or 0
+                    last_progress=dict(task_id=saved[0],completed=done,total=total,percent=round(100*done/max(1,total),1),eta_seconds=None,preview=[],stage='text')
+                return False
+        response=send_progress(dict(task_id=None,completed=0,total=None,percent=0,eta_seconds=None,
+                preview=[],stage=stage,operation=operation,**details))
         emit('preparation',dict(stage=stage,operation=operation))
         # Resume must preserve the durable plan; preparation updates apply only before its creation.
         return response.get('pause_requested') is True
@@ -77,18 +101,17 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
             def shared_request(route,value):
                 req=urllib.request.Request(endpoint+route,data=json.dumps({'pipeline':pipeline,**value}).encode(),headers=headers)
                 with urllib.request.urlopen(req,timeout=15) as response:return json.load(response)
-            deadline=time.monotonic()+600
             while True:
                 artifact=shared_request('/pipeline/artifact',{'metadata':True})
                 if artifact.get('ready'):break
                 statuses=shared_request('/pipeline/status',{})['phases']
-                if any(p['state'] in ('failed','paused') for p in statuses if p['stage'] in ('material','normative_prepare')):raise NotReady('Shared preparation is unavailable')
+                if any(p['state']=='failed' for p in statuses if p['stage'] in ('material','normative_prepare')):raise NotReady('Shared preparation failed')
+                if any(p['state']=='paused' for p in statuses if p['stage'] in ('material','normative_prepare')):raise PreparationPaused()
                 if preparing('parse','Общая подготовка документов на CPU') or bridge.stop_event.is_set():raise PreparationPaused()
-                if time.monotonic()>deadline:raise TimeoutError('Shared preparation timeout')
                 time.sleep(2)
             from types import SimpleNamespace
             from pipeline import remote_turn
-            admission=SimpleNamespace(pipeline_id=pipeline,pipeline_endpoint=endpoint,timeout=300)
+            admission=SimpleNamespace(pipeline_id=pipeline,pipeline_endpoint=endpoint,timeout=300,_queue_wait=queue_wait)
             reserve=max(512,256+int(artifact['bytes'])*6//1048576)
             with remote_turn(admission,'normative_material','cpu',ram_mb=reserve):
                 artifact=shared_request('/pipeline/artifact',{})
@@ -98,7 +121,8 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
                 docs=[lookup[d['sha256']] for d in payload['documents']]
             shared_request('/pipeline/phase',{'stage':'normative','state':'running'})
         else:docs=corpus(paths)
-        model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store,**({'pipeline_id':pipeline} if pipeline else {}))
+        model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store,queue_wait=queue_wait,**({'pipeline_id':pipeline} if pipeline else {}))
+        model._queue_wait=queue_wait
         visual_enabled=payload.get('visual_version')=='visual-tail-v1'
         if visual_enabled:
             from .visual_tail import prepare
@@ -216,12 +240,11 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
                           evidence=[{'quote':str(e.get('quote',''))[:500],'location':e.get('location','')}
                                     for e in d.get('evidence',[])[:2]])
                      for d in (decisions or []) if d.get('outcome')=='violated'][:5]
-            response=bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],
-                job_id=payload['job_id'],progress=dict(task_id=task_id,completed=completed,total=total+trace_total+visual_total,
+            response=send_progress(dict(task_id=task_id,completed=completed,total=total+trace_total+visual_total,
                     percent=round(completed/max(1,total+trace_total+visual_total)*100,1),
                     eta_seconds=(round((time.monotonic()-started)/(completed-previous_completed)*max(0,total+trace_total+visual_total-completed)) if completed>previous_completed else previous_eta),
                     preview=preview,**({'stage':'vision' if phase=='waiting_native' else phase,'visual_total':visual_total} if visual_enabled else {}),
-                    **({'operation':'Ожидание завершения текстовых проверок'} if phase=='waiting_native' else {}))))
+                    **({'operation':'Ожидание завершения текстовых проверок'} if phase=='waiting_native' else {})))
             paused=response.get('pause_requested') is True or bridge.stop_event.is_set()
             if journal and not paused:
                 try:journal.deliver(bridge,claim,max_chunks=1)

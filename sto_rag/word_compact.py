@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from zipfile import ZipFile, ZIP_DEFLATED
+from word_source import open_archive, is_doc
 import hashlib
 import json
 import os
@@ -34,10 +35,11 @@ def plain(p):
 
 def package(path):
     path=Path(path).resolve(strict=True)
-    if path.suffix.lower()!='.docx':raise ValueError('Поддерживается DOCX. Для PDF/XLSX/PPTX используйте полный профиль.')
+    native=is_doc(path)
+    if path.suffix.lower()!='.docx' and not native:raise ValueError('Поддерживается DOC/DOCX. Для PDF/XLSX/PPTX используйте полный профиль.')
     raw=path.read_bytes()
     if len(raw)>50_000_000:raise ValueError('Лимит DOCX: 50 МБ.')
-    with ZipFile(BytesIO(raw)) as z:
+    with open_archive(path if native else BytesIO(raw)) as z:
         if sum(i.file_size for i in z.infolist())>150_000_000:raise ValueError('Распакованный DOCX превышает 150 МБ.')
         files={i.filename:z.read(i) for i in z.infolist()}
     root=E.fromstring(files['word/document.xml'])

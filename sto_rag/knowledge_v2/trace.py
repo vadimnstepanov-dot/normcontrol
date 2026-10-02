@@ -215,6 +215,10 @@ def run(store,job_id,links,docs,facts,verify,client,authorize,checkpoint,*,routi
                 if lost.is_set():raise Conflict('Trace lease lost')
                 store.checkpoint(tid,task['lease'],cursor)
             store.checkpoint(tid,task['lease'],cursor,done=True)
+        except __import__('pipeline').QueuePaused:
+            store.checkpoint(tid,task['lease'],cursor)
+            with store.connection() as db:db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND lease=?",(tid,task['lease']))
+            return dict(state='paused',rows=initial,task_id=tid)
         except Exception as e:
             store.fail_task(tid,task['lease'],str(e),permanent=isinstance(e,(PermissionError,Conflict)));raise
         finally:stop.set();heart.join(timeout=1)

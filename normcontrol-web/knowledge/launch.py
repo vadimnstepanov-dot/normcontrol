@@ -127,7 +127,12 @@ def dependency_ready(command):
         command.save(update_fields=['state','result'])
         return False
     if job.pause_requested or job.state=='paused':return False
-    if command.payload.get('pipeline_version')=='pipeline-v1':return batch.status not in ('paused','failed')
+    if command.payload.get('pipeline_version')=='pipeline-v1':
+        if batch.status in ('paused','failed'):return False
+        run=WorkerRun.objects.filter(batch=batch).first()
+        # Do not occupy the sole normative executor for a package whose native
+        # preparation has not even been claimed. Earlier packages still need it.
+        return bool(run and run.local_id and run.state in ('preparing','running','completed','partial'))
     if command.payload.get('after_non_normative'):
         run=WorkerRun.objects.filter(batch=batch).first()
         if not run or run.state not in ('completed','partial','failed','cancelled'):return False

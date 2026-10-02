@@ -174,7 +174,7 @@ def parse_structure(source,output,*,ocr=True,max_pages=None,cancel=lambda:False,
         try:
             if kind in ('.docx','.doc'):
                 from .structure_docx import read_docx
-                parsed=original if kind=='.docx' else office_convert(original,run/'conversions','docx')
+                parsed=original
                 inspect(parsed)
                 result=read_docx(parsed,run/'assets')
                 from .word_evidence import enrich_word

@@ -50,6 +50,17 @@ class ChatMessage(models.Model):
         ordering=['id']
         constraints=[models.UniqueConstraint(fields=['conversation','key'],name='unique_chat_message_key')]
 
+class ChatResponse(models.Model):
+    """Durable model turn; separate from document reviews and their findings."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    user_message=models.OneToOneField(ChatMessage,on_delete=models.CASCADE,related_name='model_response')
+    assistant_message=models.OneToOneField(ChatMessage,on_delete=models.CASCADE,related_name='model_request')
+    state=models.CharField(max_length=12,default='queued',db_index=True)
+    lease=models.UUIDField(null=True,blank=True)
+    lease_until=models.DateTimeField(null=True,blank=True)
+    created=models.DateTimeField(auto_now_add=True)
+    updated=models.DateTimeField(auto_now=True)
+
 def private_path(instance,filename):return str(instance.batch_id)+'/'+uuid.uuid4().hex+'.docx'
 
 class LaunchReceipt(models.Model):

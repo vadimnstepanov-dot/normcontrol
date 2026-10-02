@@ -2,10 +2,16 @@ import os
 import unittest
 from unittest.mock import patch
 
-from nc5.worker import runtime_config
+from nc5.worker import runtime_config,start_required
 
 
 class WorkerConfigurationTests(unittest.TestCase):
+    def test_resumed_live_engine_is_not_started_twice(self):
+        from types import SimpleNamespace
+        self.assertFalse(start_required(SimpleNamespace(is_alive=lambda:True),'running'))
+        self.assertTrue(start_required(SimpleNamespace(is_alive=lambda:False),'running'))
+        self.assertFalse(start_required(None,'paused'))
+        self.assertTrue(start_required(None,'preparing'))
     @patch('nc5.worker.config')
     def test_portal_cannot_replace_local_planning_tuning(self, local_config):
         local_config.return_value={

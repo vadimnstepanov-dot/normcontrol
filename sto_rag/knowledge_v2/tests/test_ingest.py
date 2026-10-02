@@ -78,11 +78,23 @@ class IngestTests(unittest.TestCase):
         self.assertIn('Applicable requirement',parsed['blocks'][0]['exact_text'])
         self.assertFalse(any(x['state']=='unreadable' for x in parsed['coverage']))
 
-    def test_doc_adapter_preserves_original_format_and_parses_converted_copy(self):
+    def test_doc_adapter_preserves_original_format_without_conversion(self):
         path=Path(self.tmp.name)/'legacy.doc';path.write_bytes(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'+b'1'*32)
-        def fake_run(command,**kwargs):
-            docx(Path(command[command.index('--outdir')+1])/'source.docx')
-        with patch('knowledge_v2.ingest.shutil.which',return_value='soffice'),patch('knowledge_v2.ingest.subprocess.run',side_effect=fake_run):
+        # The synthetic Word projection is XML in memory, with source identity.
+        import xml.etree.ElementTree as ET
+        from collections import OrderedDict
+        from word_source import PKG,VERSION
+        fixture=Path(self.tmp.name)/'fixture.docx';docx(fixture)
+        package=ET.Element(PKG+'package')
+        with ZipFile(fixture) as archive:
+            for name in archive.namelist():
+                part=ET.SubElement(package,PKG+'part',{PKG+'name':'/'+name})
+                data=ET.SubElement(part,PKG+'xmlData');data.append(ET.fromstring(archive.read(name)))
+        before=sha256(path)
+        snapshot={'adapter':VERSION,'source_sha256':before,'flat_xml':ET.tostring(package,encoding='unicode')}
+        with patch('word_source.reader',return_value=snapshot),patch('word_source._cache',OrderedDict()),patch('knowledge_v2.ingest.subprocess.run') as conversion:
             parsed=parse(path)
+            conversion.assert_not_called()
         self.assertEqual(parsed['kind'],'.doc')
         self.assertEqual(parsed['blocks'][1]['exact_text'],'Правило должно выполняться.')
+        self.assertEqual(sha256(path),before)

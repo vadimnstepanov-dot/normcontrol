@@ -2,3 +2,6 @@
 !sto_rag
 !sto_rag/knowledge_v2
 !sto_rag/knowledge_v2/*.py
+!sto_rag/pipeline.py
+!sto_rag/token_cache.py
+!sto_rag/word_source.py

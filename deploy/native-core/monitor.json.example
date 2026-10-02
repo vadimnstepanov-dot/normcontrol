@@ -1,0 +1,6 @@
+{
+  "endpoint": "https://192.0.2.10:8098",
+  "queue_token_file": "C:/NormControl/secrets/queue.token",
+  "host_token_file": "C:/NormControl/secrets/host.token",
+  "certificate": "C:/NormControl/secrets/gateway.crt"
+}

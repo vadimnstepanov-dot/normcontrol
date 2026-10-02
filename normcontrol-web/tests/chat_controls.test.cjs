@@ -1,4 +1,10 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
+test('RAG links are shown only for cited internal sources and titles remain plain text',()=>{
+ const c={id:'chat',messages:[{role:'assistant',text:'Вывод [S1].',metadata:{kind:'model',state:'done',rag_sources:[{label:'S1',name:'<script>title</script>',locator:'4.2',url:'/normcontol/knowledge/areas/fixture/'},{label:'S2',name:'Unused',url:'/normcontol/knowledge/areas/unused/'},{label:'S1',name:'External',url:'https://outside.test/'}]}}]};
+ const row=app(c).element('messages').children[0],sources=row.children.find(n=>n.className==='chat-rag-sources');
+ assert.equal(sources.children.length,2);assert.equal(sources.children[1].textContent,'[S1] <script>title</script> · 4.2');
+ assert.equal(sources.children[1].href,'/normcontol/knowledge/areas/fixture/');assert.equal(sources.children[1].rel,'noopener');
+});
 function app(conversation=null){const nodes=new Map(),timers=new Map(),intervals=new Map(),requests=[],events={};let serial=0,clock=0;
 const element=id=>{if(nodes.has(id))return nodes.get(id);const e={hidden:false,value:'',placeholder:'Проверь документы',textContent:'',dataset:{},children:[],get firstChild(){return this.children[0];},attrs:{},files:[],scrollHeight:0,scrollTop:0,clientHeight:0,classList:{toggle(){}},setAttribute(k,v){this.attrs[k]=v;},getAttribute(k){return this.attrs[k]||null;},removeAttribute(k){delete this.attrs[k];},focus(){},append(...x){this.children.push(...x);},replaceChildren(...x){this.children=x;},querySelectorAll(){return [];},addEventListener(k,f){this[k]=f;},getBoundingClientRect(){return {height:72};}};nodes.set(id,e);return e;};
 element('chat-initial').textContent=JSON.stringify({conversation,choices:{checks:[],norms:[]},presentation:'chat'});element('history').hidden=true;

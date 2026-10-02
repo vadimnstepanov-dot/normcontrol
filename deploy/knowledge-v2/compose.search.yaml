@@ -1,0 +1,24 @@
+# CPU-only retrieval stays available while the normative review executor is busy.
+services:
+  search-worker:
+    image: ${KNOWLEDGE_SEARCH_IMAGE:-normcontrol/knowledge-search:1.0.0}
+    build:
+      context: ../..
+      dockerfile: deploy/knowledge-v2/worker.Dockerfile
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: 0.5
+    mem_limit: 384m
+    environment:
+      NORMCONTROL_KNOWLEDGE_DATA: /data
+      NORMCONTROL_KNOWLEDGE_PORTAL: ${KNOWLEDGE_PORTAL_URL:?Portal URL required}
+      NORMCONTROL_KNOWLEDGE_WORKER_TOKEN: ${KNOWLEDGE_WORKER_TOKEN:?Dedicated token required}
+      KNOWLEDGE_EMBEDDING_URL: http://embeddings:8109
+      KNOWLEDGE_QDRANT_URL: http://qdrant:6333
+      KNOWLEDGE_SEARCH_ONLY: "1"
+    volumes:
+      - ${KNOWLEDGE_DATA_PATH:?Canonical store required}:/data
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}

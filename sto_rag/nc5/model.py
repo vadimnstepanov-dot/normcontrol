@@ -7,7 +7,7 @@ import os
 import ssl
 from .common import dumps,digest
 
-from .prompts import POLICY, stage_policy
+from .prompts import POLICY, stage_policy, numeric_brief_scope
 
 def obj(props):return {'type':'object','properties':props,'required':list(props),'additionalProperties':False}
 STR={'type':'string'};ARR=lambda schema:{'type':'array','items':schema}
@@ -32,7 +32,10 @@ def output_budget(config,payload):
     return min(config['output'],max(cap,int(payload.get('_output_budget',0))))
 
 class Client:
-    def __init__(self,config):self.config=config;self.context=config['context'];self.props={};self.signature='';self.count_cache={}
+    def __init__(self,config,store=None):
+        self.config=config;self.context=config['context'];self.props={};self.signature='';self.count_cache={};self.schema_counts={}
+        from token_cache import TokenCache
+        self.token_cache=TokenCache(store.connect) if store is not None else None
     @http_measured
     def http(self,path,payload=None,timeout=None):
         headers={'Content-Type':'application/json'}
@@ -52,7 +55,7 @@ class Client:
         if self.config.get('pipeline_id'):
             from pipeline import host
             from llm_sidecar import ensure_profile
-            with host().turn(self.config['pipeline_id'],'native_probe','gpu',ram_mb=64):
+            with host().turn(self.config['pipeline_id'],'native_probe','gpu',ram_mb=64,on_wait=getattr(self,'_queue_wait',None)):
                 ensure_profile('text');return self._probe()
         return self._probe()
     def _probe(self):
@@ -112,7 +115,7 @@ class Client:
         if payload['stage']=='verify':schema['properties']['findings']['maxItems']=0
         if payload['stage']=='verify':schema['properties']['decisions']['maxItems']=len(payload.get('candidates',[]))
         if payload['stage'] not in ('verify','feedback'):schema['properties']['decisions']['maxItems']=0
-        system=stage_policy(payload['stage']); user=dumps(payload)
+        system=stage_policy(payload['stage'],numeric_brief=bool(self.config.get('numeric_brief_explanation',True) and numeric_brief_scope(payload))); user=dumps(payload)
         if payload.get('images'):
             from .vision import content,VISUAL
             system=VISUAL
@@ -124,17 +127,31 @@ class Client:
             'response_format':{'type':'json_schema','json_schema':{'name':'review_v5','strict':True,'schema':schema}}}
     @measured('nc5.count')
     def count(self,payload):
+        key=digest([self.signature,payload])
+        if key in self.count_cache:
+            observe('nc5.count_cache_hit');return self.count_cache[key]
+        req=self.request(payload)
+        if self.token_cache is not None:
+            saved=self.token_cache.get(self.signature,self.measurement_request(payload,req))
+            if saved is not None:
+                self._remember_count(key,saved);observe('nc5.count_persistent_hit');return saved
         if self.config.get('pipeline_id'):
             from pipeline import host
             from llm_sidecar import ensure_profile
-            with host().turn(self.config['pipeline_id'],'native_tokenize','gpu',ram_mb=64):
-                ensure_profile('text');return self._count(payload)
-        return self._count(payload)
-    def _count(self,payload):
-        key=digest(payload)
+            with host().turn(self.config['pipeline_id'],'native_tokenize','gpu',ram_mb=64,on_wait=getattr(self,'_queue_wait',None)):
+                ensure_profile('text');return self._count(payload,req)
+        return self._count(payload,req)
+    def _remember_count(self,key,tokens):
+        if len(self.count_cache)>=2000:self.count_cache.clear()
+        self.count_cache[key]=tokens
+    def measurement_request(self,payload,req):
+        # Visual reserves are counted separately and are absent from the wire request.
+        return dict(request=req,image_reserves=[i['tokens_reserve'] for i in payload['images']]) if payload.get('images') else req
+    def _count(self,payload,req=None):
+        key=digest([self.signature,payload])
         observe('nc5.count_cache_hit' if key in self.count_cache else 'nc5.count_cache_miss')
         if key in self.count_cache:return self.count_cache[key]
-        req=self.request(payload);args={k:req[k] for k in ('messages','tools','tool_choice','chat_template_kwargs')}
+        req=req or self.request(payload);args={k:req[k] for k in ('messages','tools','tool_choice','chat_template_kwargs')}
         if payload.get('images'):
             args=copy.deepcopy(args)
             for message in args['messages']:
@@ -142,10 +159,14 @@ class Client:
         prompt=self.http('/apply-template',args,60)['prompt']
         n=len(self.http('/tokenize',{'content':prompt,'add_special':False,'parse_special':True},60)['tokens'])
         # Schema is server grammar, but count it conservatively in case the runtime also injects it.
-        schema_tokens=len(self.http('/tokenize',{'content':dumps(req['response_format']['json_schema']['schema']),'add_special':False},60)['tokens'])
+        schema_key=digest([self.signature,req['response_format']])
+        if schema_key not in self.schema_counts:
+            if len(self.schema_counts)>=128:self.schema_counts.clear()
+            self.schema_counts[schema_key]=len(self.http('/tokenize',{'content':dumps(req['response_format']['json_schema']['schema']),'add_special':False},60)['tokens'])
+        schema_tokens=self.schema_counts[schema_key]
         n+=sum(i['tokens_reserve'] for i in payload.get('images',[]))
-        self.count_cache[key]=n+schema_tokens
-        if len(self.count_cache)>2000:self.count_cache.clear()
+        self._remember_count(key,n+schema_tokens)
+        if self.token_cache is not None:self.token_cache.put(self.signature,self.measurement_request(payload,req),n+schema_tokens)
         return n+schema_tokens
     @measured('nc5.generate')
     def generate(self,payload):
@@ -165,7 +186,7 @@ class Client:
             # Profile changes and generation share one host admission ticket.
             @contextmanager
             def text_turn():
-                with host().turn(pipeline,payload.get('stage','native'),'gpu'):
+                with host().turn(pipeline,payload.get('stage','native'),'gpu',on_wait=getattr(self,'_queue_wait',None)):
                     ensure_profile('text');yield
             turn=text_turn()
         with turn,Lease(DATA/'model.lock'):

@@ -28,10 +28,10 @@ class PipelineTests(unittest.TestCase):
   self.available=2500
   ticket=self.q.ticket('a','parse','cpu',ram_mb=1024)
   self.assertEqual(ticket['state'],'waiting')
-  self.available=6000
+  self.available=8048
   self.assertEqual(self.q.ticket('a','parse','cpu',ticket['id'],1024)['state'],'running')
  def test_cross_resource_reservations(self):
-  self.available=6348
+  self.available=system_reserve_mb(32000)+2252
   self.assertEqual(self.q.ticket('a','parse','cpu',ram_mb=2048)['state'],'running')
   self.assertEqual(self.q.ticket('a','llm','gpu')['state'],'waiting')
  def test_impossible_task_fails_without_queue_entry(self):
@@ -57,6 +57,21 @@ class PipelineTests(unittest.TestCase):
   with self.assertRaises(RuntimeError):
    with self.q.turn('a','parse','cpu'):raise RuntimeError('fixture')
   self.assertEqual(self.q.resources('a')['queue'],[])
+ def test_ram_wait_longer_than_old_deadline_is_backpressure(self):
+  self.available=2500;clock=[0];notices=[]
+  def advance(seconds):
+   clock[0]+=301
+   if clock[0]>900:self.available=8048
+  with patch('pipeline.time.monotonic',side_effect=lambda:clock[0]),patch('pipeline.time.sleep',side_effect=advance):
+   with self.q.turn('a','parse','cpu',timeout=600,on_wait=lambda t:notices.append(t)):
+    self.assertGreater(clock[0],600)
+  self.assertTrue(all(t['waiting_reason']=='ram' for t in notices));self.assertEqual(self.q.resources('a')['queue'],[])
+ def test_local_pause_releases_waiting_ticket(self):
+  from pipeline import QueuePaused
+  self.available=2500
+  with self.assertRaises(QueuePaused):
+   with self.q.turn('a','parse','cpu',on_wait=lambda t:True):self.fail('Work started under RAM pressure')
+  self.assertEqual(self.q.resources('a')['queue'],[])
  def test_vision_waits_for_native_profile_owner(self):
   self.q.register('a',['language','sto'])
   self.q.phase('a','material','done');self.q.phase('a','normative_prepare','done');self.q.phase('a','normative','done')
@@ -65,12 +80,12 @@ class PipelineTests(unittest.TestCase):
  def test_cache_under_pressure_disabled_and_size_bounded(self):
   with patch('pipeline.memory_mb',return_value=(32000,2700)):self.assertEqual(cache_budget(8*1024**3),0)
   with patch('pipeline.memory_mb',return_value=(32000,16000)):self.assertEqual(cache_budget(8*1024**3),1024*1048576)
- def test_requested_four_gib_reserve_is_fixed(self):
-  self.assertEqual(system_reserve_mb(32000),4096)
-  self.assertEqual(system_reserve_mb(16000),4096)
-  self.available=4096
+ def test_requested_two_gib_reserve_is_fixed(self):
+  self.assertEqual(system_reserve_mb(32000),2048)
+  self.assertEqual(system_reserve_mb(16000),2048)
+  self.available=2048
   self.assertEqual(self.q.ticket('a','parse','cpu',ram_mb=64)['state'],'waiting')
-  self.assertEqual(self.q.resources('a')['reserve_mb'],4096)
+  self.assertEqual(self.q.resources('a')['reserve_mb'],2048)
  def test_file_size_reservation(self):
   path=Path(self.folder.name)/'fixture.docx';path.write_bytes(b'fixture')
   self.assertGreaterEqual(preparation_mb([path]),512)
@@ -102,9 +117,27 @@ class PipelineTests(unittest.TestCase):
    with self.assertRaises(RuntimeError):
     with remote_turn(client):raise RuntimeError('fixture')
   self.assertIsNone(client._model_ticket);self.assertEqual(self.q.resources('a')['queue'],[])
+ def test_remote_instance_transport_uses_same_ticket_and_release(self):
+  calls=[]
+  def transport(value):
+   calls.append(value)
+   if value['action']=='release':self.q.release(value['id'],value['pipeline']);return {'released':True}
+   return self.q.ticket(value['pipeline'],value['stage'],value['resource'],value.get('id'),value['ram_mb'])
+  client=SimpleNamespace(pipeline_id='chat-fixture',pipeline_endpoint='http://fixture',pipeline_request=transport)
+  with patch('urllib.request.urlopen',side_effect=AssertionError('Global credential transport called')):
+   with remote_turn(client,'chat',ram_mb=128):self.assertTrue(client._model_ticket)
+  self.assertEqual([c['action'] for c in calls],['acquire','release']);self.assertEqual(self.q.resources('chat-fixture')['queue'],[])
+ def test_remote_pause_releases_ticket_without_starting_model(self):
+  from pipeline import QueuePaused
+  self.available=2500
+  client=SimpleNamespace(pipeline_id='a',pipeline_endpoint='http://fixture',timeout=1,_queue_wait=lambda t:True)
+  with patch.dict('os.environ',{'NORMCONTROL_LLM_API_KEY':'fixture-token'}),patch('urllib.request.urlopen',side_effect=self.transport):
+   with self.assertRaises(QueuePaused):
+    with remote_turn(client):self.fail('Generation started')
+  self.assertEqual(self.q.resources('a')['queue'],[])
 
  def test_lightweight_count_can_run_inside_cpu_reservation(self):
-  self.available=4748
+  self.available=system_reserve_mb(32000)+652
   with self.q.turn('a','parse','cpu'):
    with self.q.turn('a','count','gpu',ram_mb=64):pass
   self.assertEqual(self.q.resources('a')['queue'],[])
@@ -122,7 +155,7 @@ class PipelineTests(unittest.TestCase):
   self.assertIn('Requirement fixture 42',[block['text'] for block in documents[0]['blocks']])
 
  def test_ram_waiter_cannot_deadlock_cpu_token_probe(self):
-  self.available=4748
+  self.available=system_reserve_mb(32000)+652
   with self.q.turn('a','plan','cpu'):
    heavy=self.q.ticket('a','normative','gpu')
    self.assertEqual(heavy['state'],'waiting')

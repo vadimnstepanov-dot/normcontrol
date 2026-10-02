@@ -44,6 +44,10 @@ def runtime_config(remote):
 def probe_required(active,model_ok,last_probe,now):
     return now-last_probe>=15 and (not active or not model_ok)
 
+def start_required(thread,state):
+    # Resume can start the engine before the next status poll.
+    return state in ('preparing','running') and not (thread and thread.is_alive())
+
 def run(url):
     with Lease(DATA/'bridge.lock'):_run(url)
 
@@ -114,7 +118,7 @@ def _run(url):
                 from pipeline import host
                 status['pipeline']=host().status(state['claim']['job'])
                 status['pipeline_resources']=host().resources(state['claim']['job'])
-            if (started!=jid or not engine.thread or not engine.thread.is_alive()) and status['state'] in ('preparing','running'):
+            if start_required(engine.thread,status['state']):
                 engine.start(jid);started=jid
             state['sequence']+=1;write(state_path,state)
             payload={'sequence':state['sequence'],'local_id':jid,'state':status['state'],'snapshot':status}

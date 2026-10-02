@@ -1,11 +1,11 @@
-# Установка на Linux
+# Установка NormControl 1.0.0 на Linux
 
 Linux поддерживает два режима:
 
 - `portal-only` — портал, пользователи, очередь и отчёты на VPS; проверку выполняет Windows-worker с GPU;
 - `full` — портал и локальный движок на Linux; принимаются `.docx`, а модель доступна через локальный OpenAI-совместимый API.
 
-Формат `.doc`, Microsoft Word COM, сверка нумерации через Word и удержание Windows от сна на Linux недоступны. Для старых `.doc` используйте Windows-worker или заранее преобразуйте их в `.docx` в доверенной среде.
+Формат `.doc`, Microsoft Word COM, сверка нумерации через Word и удержание Windows от сна на Linux недоступны. Для прямого DOC → DOC используйте основной Docker-обработчик с настроенным Windows-мостом и Microsoft Word. Это отдельная схема, описанная в deploy/native-core/README.md; на чистом Linux без моста прямой DOC недоступен.
 
 ## 1. Требования
 
@@ -21,7 +21,7 @@ sudo apt install -y git python3 python3-venv python3-pip
 ## 2. Получение проекта
 
 ```bash
-git clone https://github.com/vadimnstepanov-dot/normcontrol.git
+git clone --branch 1.0.0 https://github.com/vadimnstepanov-dot/normcontrol.git
 cd normcontrol
 ```
 
@@ -66,6 +66,8 @@ APP_DEBUG=1 APP_DATA=/tmp/normcontrol-tests \
 
 ```bash
 export APP_DEBUG=1
+export APP_HTTPS=0
+export NORMCONTROL_KNOWLEDGE_V2=1
 export APP_DATA="$PWD/normcontrol-web/data"
 .venv/bin/python normcontrol-web/manage.py migrate
 .venv/bin/python normcontrol-web/manage.py createsuperuser
@@ -85,6 +87,7 @@ APP_HOSTS=normcontrol.example.org
 APP_ORIGINS=https://normcontrol.example.org
 APP_DATA=/var/lib/normcontrol
 APP_NAME=Нормоконтроль
+NORMCONTROL_KNOWLEDGE_V2=1
 NORMCONTROL_WORKER_TOKEN=<random-token-at-least-32-characters>
 ```
 
@@ -207,7 +210,8 @@ Linux-worker принимает `.docx`. Пакет с `.doc` завершитс
 
 ```bash
 sudo systemctl stop normcontrol
-git pull --ff-only
+git fetch origin --tags
+git checkout 1.0.0
 bash scripts/install-linux.sh --portal-only
 set -a; source /etc/normcontrol.env; set +a
 .venv/bin/python normcontrol-web/manage.py migrate
@@ -215,4 +219,36 @@ set -a; source /etc/normcontrol.env; set +a
 sudo systemctl start normcontrol
 ```
 
-Перед обновлением сохраните `APP_DATA` и, для полного режима, `sto_rag/data/nc5`.
+До остановки включите planned_maintenance on --minutes 15 с реалистичным сроком, сохраните checkpoint обработчика и согласованную копию APP_DATA, индекса, файлов и баз. Для SQLite используйте backup API либо остановленную базу. После запуска проверьте сохранность идентификаторов и результатов, совместимость закреплённых планов и выключите страницу работ. Полный порядок — [INSTALL.md](INSTALL.md#обновление-существующей-установки).
+
+## 12. Docker и Windows-мост
+
+[Основной обработчик](deploy/native-core/README.md) содержит worker, API, очередь и шлюз. В этой конфигурации измерение RAM хоста, GPU-модель и прямой DOC используют Windows-мост. Приведённый выше автономный Linux-движок для DOCX и Docker-схема с мостом — разные варианты.
+
+Для нормативной базы следуйте [Knowledge v2 INSTALL](deploy/knowledge-v2/INSTALL.md). Публикация нормативов и их права доступа обязательны для использования в диалоге и проверках. Дополнительный compose.search.yaml запускает CPU-обработчик поиска рядом с существующей базой.
+
+## 13. Восстановление диалога и плановые работы
+
+Входящие вопросы сохраняются в базе портала, ответы выполняются асинхронно. После восстановления приложения можно обработать оставшуюся очередь:
+
+```bash
+set -a
+source /etc/normcontrol.env
+set +a
+.venv/bin/python normcontrol-web/manage.py chat_responses
+```
+
+Команда использует действующие настройки модели и пользователя; её можно запускать таймером сервиса для восстановления, без отдельной базы диалогов. Не подменяйте ей нормативный worker.
+
+Страница плановых работ:
+
+```bash
+.venv/bin/python normcontrol-web/manage.py planned_maintenance on --minutes 15 --message 'Обновляем NormControl.'
+.venv/bin/python normcontrol-web/manage.py planned_maintenance status
+# После проверки приложения:
+.venv/bin/python normcontrol-web/manage.py planned_maintenance off
+```
+
+Чтобы страница оставалась доступна при остановленном Gunicorn, настройте независимый маршрут прокси из deploy/native-core/maintenance.caddy и MAINTENANCE_PUBLIC_DIR. Страница содержит срок и возвращает HTTP 503; она не выключается сама, когда срок истёк.
+
+Полные синтетические проверки выполняйте в отдельном окружении по [INSTALL.md](INSTALL.md#проверка-чистой-установки); не запускайте их с производственным APP_DATA.

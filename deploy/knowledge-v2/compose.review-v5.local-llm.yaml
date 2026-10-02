@@ -6,7 +6,7 @@ services:
     extends:
       file: compose.review.yaml
       service: review-worker
-    image: ${KNOWLEDGE_REVIEW_V5_IMAGE:-normcontrol/review-worker:0.9.5}
+    image: ${KNOWLEDGE_REVIEW_V5_IMAGE:-normcontrol/review-worker:1.0.0}
     environment:
       SSL_CERT_FILE: /etc/ssl/certs/normcontrol-gateway.crt
       KNOWLEDGE_LLM_PROFILE_CONTROL: "1"

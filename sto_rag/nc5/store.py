@@ -111,6 +111,11 @@ class Store:
             self.event(task['job'],'task_finished',{'task':task['id'],'state':state,'stage':task['stage']},c)
             c.execute('UPDATE jobs SET updated=? WHERE id=?',(time.time(),task['job']))
         return True
+    def defer(self,task,unstarted=True):
+        with self.connect() as c:
+            changed=c.execute("UPDATE tasks SET state='pending',started=NULL,ended=NULL,error=NULL,attempts=MAX(0,attempts-?) WHERE id=? AND job=? AND state='running'",(int(unstarted),task['id'],task['job'])).rowcount
+            if changed:self.event(task['job'],'resource_wait_deferred',{'task':task['id'],'stage':task['stage']},c)
+        return bool(changed)
     def finding(self,jid,value,status='candidate'):
         # Identical arithmetic operands or identical proposed edits at identical
         # source locations represent one defect even when stages phrase its title differently.
@@ -127,6 +132,10 @@ class Store:
             if len(numbers)>=2:
                 identity=['numbered_reference',numbers];category='reference';evidence=sorted({(e[0],e[1]) for e in evidence})
         fid=digest([jid,category,evidence,identity])[:24]
+        from .formal_language import duplicate_key
+        modal=duplicate_key(value)
+        if modal:
+            fid=digest([jid,'source_proven_grammar',modal])[:24]
         value={**value,'id':fid}
         with self.connect() as c: c.execute('INSERT OR IGNORE INTO findings VALUES(?,?,?,?)',(fid,jid,status,dumps(value)))
         if status=='confirmed':milestone('first_confirmed_finding_seconds')

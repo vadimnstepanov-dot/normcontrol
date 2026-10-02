@@ -1,7 +1,7 @@
 """Human report addresses. Word-verified labels; never guess automatic numbering."""
 from collections import defaultdict, deque, Counter
 from pathlib import Path
-from zipfile import ZipFile
+from word_source import open_archive as ZipFile
 import json
 import re
 import subprocess
@@ -18,6 +18,10 @@ NOTE = ('Адреса относятся к исходной версии док
         'указаны номер родительского пункта и название подраздела. Цитата служит ориентиром для поиска.')
 
 def verified_rows(path, digest):
+    from word_source import is_doc,reader
+    if is_doc(path) and reader:
+        value=reader(Path(path))
+        return [{'text':row['text'],'outline':row['outline']-1,'label':row['label']} for row in value['paragraphs'] if row['outline']<10]
     cache = HERE/'data'/'heading_labels'/(digest+'.json')
     if not cache.exists() and os.name == 'nt':
         # Explicitly numbered/plain headings need no Word process, which matters for large corpora.

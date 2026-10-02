@@ -25,6 +25,25 @@ class TransportTests(unittest.TestCase):
             with self.assertRaises(urllib.error.URLError):self.bridge.http('/worker/claim/',{})
             self.assertEqual(request.call_count,1);sleep.assert_not_called()
 
+    def test_check_progress_survives_portal_restart_without_new_command(self):
+        value={'command_id':'command','lease':'lease','job_id':'job',
+               'progress':{'completed':0,'stage':'facts','operation':'Waiting for model'}}
+        bodies=[]
+        def open_request(request,**kwargs):
+            bodies.append(request.data)
+            if len(bodies)==1:raise urllib.error.HTTPError(request.full_url,502,'Bad Gateway',{},None)
+            return io.BytesIO(b'{"accepted":true,"pause_requested":false}')
+        with patch('knowledge_v2.bridge.urllib.request.urlopen',side_effect=open_request),patch('knowledge_v2.bridge.time.sleep'):
+            self.assertTrue(self.bridge.http('/worker/checks/progress/',value)['accepted'])
+        self.assertEqual(len(bodies),2);self.assertEqual(bodies[0],bodies[1])
+        self.assertEqual(json.loads(bodies[1]),value)
+
+    def test_check_progress_never_retries_a_revoked_lease(self):
+        error=urllib.error.HTTPError('https://portal/worker/checks/progress/',409,'Stale lease',{},None)
+        with patch('knowledge_v2.bridge.urllib.request.urlopen',side_effect=error) as request,patch('knowledge_v2.bridge.time.sleep') as sleep:
+            with self.assertRaises(urllib.error.HTTPError):self.bridge.http('/worker/checks/progress/',{})
+            self.assertEqual(request.call_count,1);sleep.assert_not_called()
+
     def test_read_authorization_retries_gateway_error_with_identical_scope(self):
         bodies=[]
         def open_request(request,**kwargs):

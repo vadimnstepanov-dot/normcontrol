@@ -13,7 +13,9 @@ from django.urls import reverse
 from django.core.exceptions import PermissionDenied
 from .access import visible_batch,editable_batch,can_edit
 from .models import WorkerRun,Document,WordReviewExport,WordReviewProposal
-from .word_review import plan,generate,sha,fingerprint,ReviewError,VERSION
+from .word_review import sha,fingerprint,ReviewError,VERSION
+from .doc_review import plan,generate
+from word_source import is_doc
 class WaitingForMemory(ReviewError):pass
 STATE_LABELS={'running':'Проверяется','preparing':'Подготовка','queued':'В очереди','paused':'Приостановлена','completed':'Завершена','partial':'Завершена с ограничениями','failed':'Ошибка','cancelled':'Отменена'}
 
@@ -50,15 +52,20 @@ def source_document(document,snapshot):
  source=Path(document.file.path)
  if sha(source)!=document.sha256:raise ReviewError('Изменён исходный документ '+document.name)
  with source.open('rb') as handle:original_docx=handle.read(4)==b'PK\x03\x04'
- working=source if original_docx else Path(document.review_working_file.path) if document.review_working_file else None
- if working is None:raise ReviewError('Для DOC нужна точная рабочая DOCX-копия обработчика. Она ещё не передана: '+document.name)
+ working=source
+ if not original_docx and not is_doc(source):raise ReviewError('Неподдерживаемый формат Word: '+document.name)
  working_hash=sha(working)
- if not original_docx and working_hash!=document.review_working_sha256:raise ReviewError('Изменилась рабочая DOCX-копия '+document.name)
  aliases={document.sha256,document.sha256[:20]}
  for d in snapshot['states'].get('native',{}).get('documents',[]):
   if d.get('sha256')==working_hash:aliases.add(str(d['id']))
  # The source hash and canonical hash are explicit; never associate by filename.
- return source,working,{'id':document.pk,'source_sha256':document.sha256,'working_sha256':working_hash,'aliases':sorted(aliases),'role':document.review_role,'name':document.name}
+ description={'id':document.pk,'source_sha256':document.sha256,'working_sha256':working_hash,'aliases':sorted(aliases),'role':document.review_role,'name':document.name}
+ if not original_docx and document.review_working_file:
+  legacy=Path(document.review_working_file.path)
+  if sha(legacy)!=document.review_working_sha256:raise ReviewError('Изменилась сохранённая рабочая копия '+document.name)
+  description['legacy_working']=str(legacy)
+  if document.review_role=='approved_reference':description['aliases']=sorted(set(description['aliases'])|{document.review_working_sha256,document.review_working_sha256[:20]})
+ return source,working,description
 
 def make_plans(batch,snapshot,version,ids,preliminary=False,style=False):
  targets=list(batch.documents.filter(pk__in=ids,review_role='target').order_by('id'))
@@ -160,6 +167,7 @@ def artifact(request,pk,export_id):
      ref=get_object_or_404(Document,batch=batch,pk=reference['id'])
      if ref.review_role!='approved_reference' or sha(ref.file.path)!=reference['sha256']:raise ReviewError('Версия или роль утверждённого эталона изменилась')
     d=get_object_or_404(Document,batch=batch,pk=p['document']['id']);source,working,_=source_document(d,record.snapshot)
+    if not p.get('adapter') and p['working_sha256']!=sha(working) and d.review_working_file:working=Path(d.review_working_file.path)
     if d.review_role!='target' or sha(source)!=p['source_sha256'] or sha(working)!=p['working_sha256']:raise ReviewError('Исходник, рабочая копия или роль изменились; сохранённый экспорт не выдаётся')
    return FileResponse(record.artifact.open('rb'),as_attachment=True,filename=Path(record.artifact.name).name)
   return HttpResponse('Экспорт ещё не сформирован',status=409)
@@ -187,16 +195,23 @@ def build_export(record):
     if ref.review_role!='approved_reference' or sha(ref.file.path)!=reference['sha256']:raise ReviewError('Версия или роль утверждённого эталона изменилась')
    d=get_object_or_404(Document,batch=batch,pk=p['document']['id'])
    if d.review_role!='target':raise ReviewError('Роль документа изменена: эталон не аннотируется')
-   source,working,_=source_document(d,record.snapshot);out=Path(folder)/('review-'+str(index)+'.docx')
+   source,working,_=source_document(d,record.snapshot)
+   # Old frozen DOCX plans still export their pinned canonical copy.
+   if not p.get('adapter') and p['working_sha256']!=sha(working) and d.review_working_file:
+    working=Path(d.review_working_file.path)
+   extension='.doc' if p.get('output_format')=='doc' else '.docx'
+   out=Path(folder)/('review-'+str(index)+extension)
    if os.name=='posix' and Path('/proc/meminfo').exists():
     available=next(int(line.split()[1])*1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))
-    with ZipFile(working) as z:estimated=96*1024**2+22*z.getinfo('word/document.xml').file_size
+    if extension=='.doc':estimated=96*1024**2+3*source.stat().st_size
+    else:
+     with ZipFile(working) as z:estimated=96*1024**2+22*z.getinfo('word/document.xml').file_size
     if available<estimated+128*1024**2:raise WaitingForMemory('Недостаточно RAM сервера для экспорта; файл не опубликован. Повторите формирование после освобождения памяти.')
-   result=generate(source,working,p,out);result['document_id']=d.pk;result['filename']=Path(d.name).stem+' — правки.docx';results.append(result);outputs.append((result['filename'],out))
+   result=generate(source,working,p,out);result['document_id']=d.pk;result['filename']=Path(d.name).stem+' — правки'+extension;results.append(result);outputs.append((result['filename'],out))
   combined={'documents':results,'seconds':round(time.monotonic()-started,3),'version':record.key,'snapshot_version':record.plans[0]['result_version'],
    'edits':sum(r['edits'] for r in results),'comments':sum(r['comments'] for r in results),'skips':sum(r['skips'] for r in results)}
   filename='normcontrol-review-'+str(record.pk)[:8]
-  if len(outputs)==1:payload=outputs[0][1].read_bytes();filename+='.docx'
+  if len(outputs)==1:payload=outputs[0][1].read_bytes();filename+=outputs[0][1].suffix
   else:
    bundle=Path(folder)/'review.zip'
    with ZipFile(bundle,'w',ZIP_DEFLATED) as z:

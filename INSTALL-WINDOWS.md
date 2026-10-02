@@ -1,4 +1,4 @@
-# Установка на Windows
+# Установка NormControl 1.0.0 на Windows
 
 Для портала на Linux используйте [INSTALL-LINUX.md](INSTALL-LINUX.md). Windows рекомендуется для локальной LLM, worker, обработки `.doc` и проверок, которым требуется Microsoft Word.
 
@@ -24,7 +24,7 @@
 - Microsoft Word для `.doc`, визуальных свойств Word и сверки автоматической нумерации;
 - свободное место для модели, нормативных источников, индекса и отчётов.
 
-Файлы `.docx` читаются напрямую. Для `.doc` система использует автоматизацию Microsoft Word и создаёт рабочую копию `.docx`.
+Файлы `.docx` читаются напрямую. В основном WSL/Docker-обработчике `.doc` читается Word через Windows-мост без промежуточного DOCX; выгрузка сохраняет формат DOC. В автономном Windows CLI сохраняется прежний механизм рабочей DOCX-копии.
 
 ### Портал
 
@@ -35,7 +35,7 @@
 ## 3. Установка локального движка
 
 ```powershell
-git clone https://github.com/vadimnstepanov-dot/normcontrol.git
+git clone --branch 1.0.0 https://github.com/vadimnstepanov-dot/normcontrol.git
 Set-Location .\normcontrol
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
@@ -132,6 +132,8 @@ $env:PYTHONPATH = "$PWD\sto_rag"
 
 ```powershell
 $env:APP_DEBUG = "1"
+$env:APP_HTTPS = "0"
+$env:NORMCONTROL_KNOWLEDGE_V2 = "1"
 $env:APP_DATA = "$PWD\normcontrol-web\data"
 .\.venv\Scripts\python.exe .\normcontrol-web\manage.py migrate
 .\.venv\Scripts\python.exe .\normcontrol-web\manage.py createsuperuser
@@ -201,14 +203,17 @@ $env:NORMCONTROL_LLAMA_LAUNCHER = 'C:\LM\llama\start_llama.bat'
 
 ## 12. Обновление и резервное копирование
 
-Перед обновлением остановите worker и портал, создайте копию каталога `APP_DATA` и `sto_rag/data/nc5`, затем:
+Перед обновлением покажите страницу плановых работ, сохраните контрольную точку и дождитесь ответа модели. Остановите заменяемые компоненты и сделайте согласованную копию APP_DATA и данных обработчика. Сохраните локальные изменения отдельно; затем:
 
 ```powershell
-git pull --ff-only
+git fetch origin --tags
+git checkout 1.0.0
 .\.venv\Scripts\python.exe -m pip install -r .\sto_rag\nc5\requirements.txt
 .\.venv\Scripts\python.exe -m pip install -r .\normcontrol-web\requirements.txt
 .\.venv\Scripts\python.exe .\normcontrol-web\manage.py migrate
 ```
+
+После миграций выполните collectstatic --noinput, проверьте сохранённые документы и результаты, возобновите только паузы обновления и выключите страницу работ. Не подменяйте хэш старого закреплённого плана; используйте совместимый обработчик или новую проверку. См. [порядок обновления](INSTALL.md#обновление-существующей-установки).
 
 Нормативные источники и индекс резервируйте совместно: отчёт должен оставаться связанным с той редакцией источника, по которой он сформирован.
 
@@ -229,8 +234,37 @@ $env:PYTHONPATH = "$PWD\sto_rag"
 
 $testData = Join-Path $env:TEMP "normcontrol-web-tests"
 $env:APP_DEBUG = "1"
+$env:APP_HTTPS = "0"
+$env:NORMCONTROL_KNOWLEDGE_V2 = "1"
 $env:APP_DATA = $testData
 .\.venv\Scripts\python.exe .\normcontrol-web\manage.py test portal
 ```
 
 Не используйте производственную базу данных для тестов.
+
+## 15. Основной обработчик в WSL/Docker
+
+Для общей очереди CPU/GPU и прямого DOC-конвейера используйте [инструкцию native-core](deploy/native-core/README.md). Обработчик, API и TLS-шлюз работают в Docker; модель, Word и аппаратный мониторинг остаются в Windows. Данные SQLite храните на Linux-диске WSL.
+
+После настройки Linux-сервиса, сертификатов и Windows-мостов создайте маркер только для выбранного режима:
+
+```powershell
+New-Item -ItemType Directory -Force .\sto_rag\data\nc5 | Out-Null
+'{}' | Set-Content .\sto_rag\data\nc5\wsl-core-active.json
+powershell -ExecutionPolicy Bypass -File .\Start-Normcontrol.ps1 `
+  -PythonExecutable "$PWD\.venv\Scripts\python.exe" `
+  -RuntimeDirectory "$env:LOCALAPPDATA\NormControl" `
+  -WslDistribution "NormControl"
+```
+
+В RuntimeDirectory должны лежать worker.env и каталог native-core с host-bridge.json, forwarder.json и monitor.json. Примеры находятся в deploy/native-core. Сценарий использует указанный интерпретатор, пути с пробелами и скрытые служебные окна. Без маркера он выбирает прежний Windows-режим, которому дополнительно нужен gateway/gateway.json. Он не устанавливает WSL, Docker, Word, модель или сертификаты.
+
+Резерв свободной RAM для допуска — 2048 МиБ, кэш документов не более 1024 МиБ. Лимит WSL задаётся отдельно; изменение резерва не выделяет память виртуальной машине.
+
+## 16. Диалог и RAG
+
+В панели администратора настройте доверенный LLM endpoint, модель и авторизацию. Для вопросов по СТО включите Knowledge v2, опубликуйте нормативы и запустите её обработчики. CPU-подбор для диалога можно вынести в отдельный search-worker через compose.search.yaml; это не отдельная копия нормативной базы.
+
+Незавершённые запросы диалога сохраняются в базе портала. При восстановлении после остановки приложения выполните manage.py chat_responses с теми же настройками APP_DATA и LLM; команда обрабатывает ожидающие запросы, а не запускает новую проверку.
+
+Полный набор проверок выпуска и правила резервного копирования приведены в [INSTALL.md](INSTALL.md). Выполняйте тесты в отдельном окружении с requirements-test.txt и requirements-test.lock.
