@@ -26,6 +26,12 @@ class SourceNameTests(SimpleTestCase):
         self.assertEqual(short,'СТО РЖД 04.001.0 · Общие положения');self.assertEqual(full,'СТО РЖД 04.001.0–2021 · Общие положения')
 
 class SourceWordTests(UploadTests):
+    def test_chat_download_get_preserves_original_and_access_control(self):
+        self.ready_word();url=self.base+'download/'
+        r=self.client.get(url);self.assertEqual(r.status_code,200)
+        self.assertEqual(b''.join(r.streaming_content),self.original);r.close()
+        self.assertEqual(Client().get(url).status_code,401)
+        self.client.force_login(self.other);self.assertEqual(self.client.get(url).status_code,403)
     def ready_word(self):
         self.original=docx(Path(self.tmp.name)/'source.docx').read_bytes()
         r=self.upload(self.original);self.sid=r.json()['sources'][0]['id']

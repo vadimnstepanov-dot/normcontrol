@@ -1,4 +1,4 @@
-# Установка NormControl 1.0.0 на Windows
+# Установка NormControl 1.1.0 на Windows
 
 Для портала на Linux используйте [INSTALL-LINUX.md](INSTALL-LINUX.md). Windows рекомендуется для локальной LLM, worker, обработки `.doc` и проверок, которым требуется Microsoft Word.
 
@@ -35,7 +35,7 @@
 ## 3. Установка локального движка
 
 ```powershell
-git clone --branch 1.0.0 https://github.com/vadimnstepanov-dot/normcontrol.git
+git clone --branch 1.1.0 https://github.com/vadimnstepanov-dot/normcontrol.git
 Set-Location .\normcontrol
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```

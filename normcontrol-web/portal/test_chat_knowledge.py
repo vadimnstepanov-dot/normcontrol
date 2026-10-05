@@ -70,12 +70,12 @@ class DialogueKnowledgeTests(TestCase):
         a,s=self.area();self.send();self.retrieve({str(a.pk):self.result(a,s)})
         Command.objects.update(state='pending')
         self.assertIsNone(services.claim('legacy',['normative.search']))
-        claim=services.claim('rag',['normative.search'],['dialogue-rag-v1']);self.assertIsNotNone(claim)
+        claim=services.claim('rag',['normative.search'],['dialogue-rag-v2']);self.assertIsNotNone(claim)
     @override_settings(KNOWLEDGE_WORKER_TOKEN='fixture-dialogue-token-'+('x'*32))
     def test_http_worker_claim_accepts_rag_feature_and_blocks_unrecognized_feature(self):
         a,s=self.area();self.send();self.retrieve({str(a.pk):self.result(a,s)});Command.objects.update(state='pending')
         headers={'HTTP_AUTHORIZATION':'Bearer fixture-dialogue-token-'+('x'*32)}
-        value={'protocol_version':2,'capabilities':['normative.search'],'features':['dialogue-rag-v1']}
+        value={'protocol_version':2,'capabilities':['normative.search'],'features':['dialogue-rag-v2']}
         url='/normcontol/api/v2/worker/claim/'
         reply=self.client.post(url,json.dumps(value),content_type='application/json',**headers)
         self.assertEqual(reply.status_code,200,reply.content);self.assertIsNotNone(reply.json()['command'])
@@ -97,8 +97,10 @@ class DialogueKnowledgeTests(TestCase):
             return original(gateway,path,value,timeout)
         with self.finish_search({str(a.pk):self.result(a,s)}),patch.object(chat_model.Gateway,'http',autospec=True,side_effect=response):chat_model.execute(*chat_model.claim())
         prompt=json.dumps(self.generation['messages'],ensure_ascii=False)
-        self.assertIn('раскрывать требования',prompt);self.assertIn('candidate',prompt);self.assertIn('preliminary_only',prompt)
-        self.assertEqual(self.row().state,'done');self.assertIn('Источники из RAG',self.row().assistant_message.text)
+        self.assertIn('раскрывать требования',prompt);self.assertIn('предварительная интерпретация',prompt);self.assertNotIn('preliminary_only',prompt);self.assertNotIn('fixture-record',prompt)
+        self.assertEqual(self.row().state,'done');self.assertNotIn('Источники из RAG',self.row().assistant_message.text)
+        self.assertTrue(self.row().assistant_message.metadata['rag_sources'][0]['url'].endswith('/download/'))
+        self.assertTrue(self.row().assistant_message.metadata['rag_sources'][0]['url'].startswith('/normcontol/api/v2/'))
         self.assertEqual(self.row().assistant_message.metadata['rag_sources'][0]['record_id'],'fixture-record')
         self.assertFalse(self.c.batch_id)
     def test_context_trimming_reduces_rag_instead_of_dropping_current_question(self):
@@ -120,8 +122,19 @@ class DialogueKnowledgeTests(TestCase):
         a,s=self.area();self.send();data=self.retrieve({str(a.pk):self.result(a,s)})
         answer=chat_knowledge.citations('Ответ [S999].',data)
         self.assertIn('не подтверждён',answer);self.assertNotIn('https://',answer)
-    def test_cited_source_stays_on_current_portal(self):
-        a,s=self.area();self.send();data=self.retrieve({str(a.pk):self.result(a,s)})
-        answer=chat_knowledge.citations('Ответ [S1].',data)
-        self.assertIn(data['sources'][0]['url'],answer)
-        self.assertNotIn('https://',answer)
+    def test_new_topic_does_not_inherit_previous_query(self):
+        a,s=self.area();self.c.messages.create(role='user',text='Шрифты документа')
+        self.send('Какие испытания предусматривает ПМИ?');self.retrieve({str(a.pk):self.result(a,s)})
+        self.assertNotIn('Шрифты',Command.objects.get().payload['query'])
+    def test_full_related_context_and_no_service_fields_in_prompt(self):
+        a,s=self.area();self.send();result=self.result(a,s)
+        result['entries'][0]['context']=[dict(locator='p'+str(i),exact_text='Условие '+str(i)) for i in range(1,7)]
+        data=self.retrieve({str(a.pk):result});prompt=chat_knowledge.compose([{'role':'user','content':'Вопрос'}],data)[-1]['content']
+        self.assertIn('Условие 6',prompt)
+        for value in ('fixture-record',str(a.pk),str(a.active_release_id),'release_id','preliminary_only','RAG_CONTEXT_JSON'):
+            self.assertNotIn(value,prompt)
+        self.assertIn('абзац 6',prompt)
+        answer=chat_knowledge.citations('Ответ '+str(a.pk),data)
+        self.assertNotIn(str(a.pk),answer)
+        answer=chat_knowledge.citations('<think>Внутренний служебный разбор</think>Ответ [S1].<|im_end|>',data)
+        self.assertNotIn('Внутренний',answer);self.assertNotIn('im_end',answer);self.assertIn('Ответ',answer)

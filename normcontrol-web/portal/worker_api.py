@@ -199,10 +199,13 @@ def claim(request):
         if not run and settings.KNOWLEDGE_V2_ENABLED:
             from knowledge.models import Command
             from knowledge.launch import dependency_ready
-            if Command.objects.filter(kind='review.execute',state='delivering').exclude(payload__pipeline_version='pipeline-v1').exists():return JsonResponse({'job':None})
+            if Command.objects.filter(kind='review.execute',state='delivering').exclude(payload__pipeline_version='pipeline-v1').exclude(payload__execution_order='sto_first').exists():return JsonResponse({'job':None})
             for c in Command.objects.filter(kind='review.execute',state='pending',payload__unified_launch=True):
-                if c.payload.get('pipeline_version')!='pipeline-v1' and dependency_ready(c):return JsonResponse({'job':None})
-        batch=run.batch if run else Batch.objects.select_for_update().filter(status='waiting',worker_run__isnull=True,archived=False).order_by('queue_position','created','pk').first()
+                if c.payload.get('execution_order')!='sto_first' and c.payload.get('pipeline_version')!='pipeline-v1' and dependency_ready(c):return JsonResponse({'job':None})
+        if run:batch=run.batch
+        else:
+            from knowledge.launch import native_ready
+            batch=next((b for b in Batch.objects.select_for_update().filter(status='waiting',worker_run__isnull=True,archived=False).order_by('queue_position','created','pk') if not settings.KNOWLEDGE_V2_ENABLED or native_ready(b)),None)
         if not batch:return JsonResponse({'job':None})
         if batch.documents.filter(review_role='approved_reference').exists() and 'document-roles-v1' not in features:
             return JsonResponse({'job':None,'reason':'document_roles_worker_upgrade_required'})

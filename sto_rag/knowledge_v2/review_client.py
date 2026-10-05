@@ -7,7 +7,7 @@ import urllib.parse
 
 from .review import POLICY
 from .store import checksum, encode, Conflict
-from .review_wire import VERSION as WIRE_VERSION, GROUPED_VERSION, TRACE_REFS_VERSION, TRACE_COMPACT_VERSION, VERSIONS, POLICY as WIRE_POLICY, payload as wire_payload, serialize as wire_encode, restore
+from .review_wire import VERSION as WIRE_VERSION, GROUPED_VERSION, TRACE_REFS_VERSION, TRACE_COMPACT_VERSION, COMPACT_NORMS_VERSION, VERSIONS, POLICY as WIRE_POLICY, payload as wire_payload, serialize as wire_encode, restore
 
 
 
@@ -74,7 +74,14 @@ class LlamaClient:
                     if response.status>=400:
                         raise urllib.error.HTTPError(self.endpoint+path,response.status,response.reason,response.headers,io.BytesIO(body))
                     return json.loads(body)
-                except (http.client.RemoteDisconnected,BrokenPipeError,ConnectionResetError):
+                except urllib.error.HTTPError as error:
+                    connection.close();self._token_connection=None
+                    # Template/token counting is read-only and keeps the same
+                    # model profile and resource ticket. A gateway hiccup must
+                    # not discard a complete preparation attempt.
+                    if attempt or error.code not in (408,429,502,503,504):raise
+                    __import__('time').sleep(1)
+                except (http.client.RemoteDisconnected,BrokenPipeError,ConnectionResetError,TimeoutError):
                     connection.close();self._token_connection=None
                     if attempt:raise
                 except Exception:
@@ -82,7 +89,10 @@ class LlamaClient:
 
     def request(self, payload):
         version=getattr(self,'wire_version',WIRE_VERSION)
-        payload,_=wire_payload(payload,version=version)
+        if payload.get('stage')=='normative_collect':
+            from .shared_evidence import descriptors
+            payload=dict(payload,obligations=descriptors(payload['obligations']))
+        payload,identities=wire_payload(payload,version=version)
         from .evidence_quotes import BLOCK_EVIDENCE_STAGES
         trace_refs=version in (TRACE_REFS_VERSION,TRACE_COMPACT_VERSION) and payload.get('stage') in ('trace_collect','trace_check','trace_verify')
         block_evidence=payload.get('stage') in BLOCK_EVIDENCE_STAGES or trace_refs
@@ -113,6 +123,25 @@ class LlamaClient:
             if payload['stage']=='trace_collect':
                 item['outcome']['enum']=['unknown'];item['claim']['enum']=['unknown']
         policy=POLICY
+        if payload.get('stage')=='normative_collect':
+            from .shared_evidence import POLICY as COLLECTION_POLICY
+            policy=COLLECTION_POLICY
+            aliases=list(identities);block_aliases=list(identities.blocks)
+            # Closed object keys occur once in the generated grammar; an array
+            # with an ID enum allowed the model to repeat the last norm forever.
+            # One shared definition also avoids duplicating all block aliases
+            # once per normative row in the tokenizer/schema budget.
+            schema=obj({'matches':dict(type='object',properties={r:{'$ref':'#/$defs/spans'} for r in aliases},required=[],additionalProperties=False),
+                'uncertain_obligations':dict(type='array',maxItems=len(aliases),items=dict(type='string',enum=aliases))})
+            schema['$defs']={'spans':dict(type='array',items=obj({'first':dict(type='string',enum=block_aliases),'last':dict(type='string',enum=block_aliases)}))}
+            if payload.get('proposed_collection'):
+                backwards={v:k for k,v in identities.items()};block_ids={v:k for k,v in identities.blocks.items()}
+                c=payload['proposed_collection']
+                payload['proposed_collection']=dict(matches=[dict(obligation_id=backwards[m['obligation_id']],
+                    block_ids=[block_ids[b] for b in m['block_ids']]) for m in c['matches']],
+                    uncertain_obligations=[backwards[r] for r in c['uncertain_obligations']])
+                from .shared_evidence import encode_spans
+                payload['proposed_collection']=encode_spans(payload['proposed_collection'],block_aliases)
         if payload.get('stage') in ('trace_check','trace_verify','trace_collect'):
             from .trace import POLICY as TRACE_POLICY
             policy=TRACE_POLICY
@@ -148,9 +177,12 @@ class LlamaClient:
         if payload.get('experience'):
             policy+='\nОпыт experience — проверенные примеры, а не норматив. Не переносить частное решение вне условий; контрпример исключает применение. Пример не служит доказательством: цитаты нужны из текущих documents и применимой нормы. При конфликте приоритет у нормы; опыт не разрешает её нарушение.'
         if payload.get('transport') in VERSIONS:policy+='\n'+WIRE_POLICY
-        if payload.get('transport') in (GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION):
+        if payload.get('transport') in (GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION,COMPACT_NORMS_VERSION):
             from .gap_wire import POLICY as GAP_POLICY
             policy+='\n'+GAP_POLICY
+        if version==COMPACT_NORMS_VERSION:
+            from .normative_values import POLICY as VALUES_POLICY
+            policy+='\n'+VALUES_POLICY
         if version==TRACE_COMPACT_VERSION:
             from .trace_wire import POLICY as TRACE_COMPACT_POLICY
             policy+='\n'+TRACE_COMPACT_POLICY
@@ -215,12 +247,20 @@ class LlamaClient:
         if self.count(payload) + self.output_tokens + 512 > self.context:
             raise ValueError('Context exceeded; no implicit compression/truncation')
         response = self.http('/v1/chat/completions', self.request(payload))
+        self.last_response=response
         self.last_usage=response.get('usage',{})
         self.last_timings=response.get('timings',{})
         choice = response['choices'][0]
         if choice.get('finish_reason') != 'stop': raise ValueError('Incomplete model output')
         result=json.loads(choice['message']['content'])
         _,identities=wire_payload(payload,version=version)
+        if payload.get('stage')=='normative_collect':
+            from .shared_evidence import validate_collection,decode_spans
+            aliases=[{'id':r} for r in identities];blocks=[{'id':b} for b in identities.blocks]
+            result=validate_collection(decode_spans(result,list(identities.blocks)),aliases,blocks)
+            return dict(matches=[dict(obligation_id=identities[m['obligation_id']],
+                block_ids=[identities.blocks[b] for b in m['block_ids']]) for m in result['matches']],
+                uncertain_obligations=[identities[r] for r in result['uncertain_obligations']])
         if identities and isinstance(result,dict):restore(result,identities)
         from .evidence_quotes import BLOCK_EVIDENCE_STAGES,attach_source_quotes
         trace_refs=version in (TRACE_REFS_VERSION,TRACE_COMPACT_VERSION) and payload.get('stage') in ('trace_collect','trace_check','trace_verify')

@@ -31,6 +31,34 @@ class UnifiedLaunchTests(TestCase):
 
     def claim(self):return services.claim('test-v2',['review.execute','trace.suggest'],['context-budget-v5','visual-tail-v1'])
 
+    def test_sto_first_holds_native_until_normative_finishes(self):
+        from .launch import dependency_ready,native_ready
+        job=start(self.user,self.batch.pk,['sto','logic','language'],[str(self.rules.pk)],None,uuid.uuid4(),execution_order='sto_first')
+        command=Command.objects.get(payload__job_id=str(job.pk))
+        self.assertNotIn('pipeline_version',command.payload)
+        self.assertFalse(command.payload['after_non_normative'])
+        self.assertTrue(dependency_ready(command))
+        self.assertFalse(native_ready(self.batch))
+        response=self.client.post('/normcontol/worker/claim/',{'worker':'native','features':['document-roles-v1','pipeline-v1']},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertIsNone(response.json()['job'])
+        job.state='partial';job.save(update_fields=['state']);reconcile(self.batch);self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status,'waiting')
+        self.assertTrue(native_ready(self.batch))
+        response=self.client.post('/normcontol/worker/claim/',{'worker':'native','features':['document-roles-v1','pipeline-v1']},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(response.json()['job'],str(self.batch.pk))
+
+    def test_sto_first_does_not_block_another_native_package(self):
+        job=start(self.user,self.batch.pk,['sto','logic'],[str(self.rules.pk)],None,uuid.uuid4(),execution_order='sto_first')
+        other=Batch.objects.create(owner=self.user,name='Other',status='waiting',checks=['language'])
+        response=self.client.post('/normcontol/worker/claim/',{'worker':'native','features':['pipeline-v1']},content_type='application/json',HTTP_AUTHORIZATION='Bearer '+self.token)
+        self.assertEqual(response.json()['job'],str(other.pk))
+
+    def test_native_failure_is_visible_while_normative_stage_is_paused(self):
+        job=self.launch();job.state='paused';job.save(update_fields=['state'])
+        WorkerRun.objects.create(batch=self.batch,state='failed')
+        reconcile(self.batch);self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status,'failed')
+
     def test_pipeline_feature_accepted_at_authenticated_http_boundary(self):
         import json
         with override_settings(KNOWLEDGE_WORKER_TOKEN=self.token),patch('knowledge.services.claim',return_value=None) as claim:

@@ -67,6 +67,27 @@
     const total=Math.max(0,Math.floor(seconds)),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),rest=total%60;
     return (hours?hours+' ч ':'')+(minutes||hours?minutes+' мин ':'')+rest+' с';
   }
+  function sourceLocation(value=''){
+    if(/^p\d+$/.test(value))return 'абзац '+value.slice(1);
+    const m=/^t(\d+)\/r(\d+)\/c(\d+)$/.exec(value);
+    return m?'таблица '+m[1]+', строка '+m[2]+', ячейка '+m[3]:value;
+  }
+  function sourceUrl(value){
+    // Canonical internal paths only, including saved messages from the old UI.
+    const source=/^\/normcontol\/(?:knowledge|api\/v2)\/normative-sets\/[a-zA-Z0-9-]+\/sources\/[a-zA-Z0-9-]+\/(?:open|download)\/$/.test(value||'');
+    if(source)value=value.replace('/normcontol/knowledge/normative-sets/','/normcontol/api/v2/normative-sets/');
+    else if(!/^\/normcontol\/knowledge\/[a-zA-Z0-9/_-]+\/$/.test(value||''))return null;
+    return value.replace(/\/sources\/([a-zA-Z0-9-]+)\/open\/$/,'/sources/$1/download/');
+  }
+  function messageText(m){
+    if(m.role!=='assistant'||m.metadata.kind!=='model'||!m.metadata.rag_sources?.length)return m.text;
+    const marker='\n\nИсточники из RAG:\n',at=m.text.lastIndexOf(marker);
+    if(at<0)return m.text;
+    const footer=m.text.slice(at+marker.length),end=footer.indexOf('\n\nОграничения поиска:');
+    const links=end<0?footer:footer.slice(0,end),labels=new Set(m.metadata.rag_sources.map(s=>s.label));
+    if(!links.split('\n').filter(x=>x.trim()).every(x=>/^\[(S\d+)\]/.test(x)&&labels.has(/^\[(S\d+)\]/.exec(x)[1])))return m.text;
+    return m.text.slice(0,at)+(end<0?'':footer.slice(end));
+  }
   function updateClock(){
     for(const clock of modelClocks)clock.node.textContent='Работает уже '+duration(clock.seconds+(performance.now()-clockReceived)/1000);
     if(!clockNode||!clockValue)return;
@@ -80,15 +101,16 @@
     const signature=JSON.stringify(data?{messages:data.messages,state:{...data.state,clock:null}}:null);if(signature===rendered){updateClock();return;}rendered=signature;clockNode=null;modelClocks=[];
     const main=$('chat-main'),nearBottom=main.scrollHeight-main.scrollTop-main.clientHeight<80,position=main.scrollTop;
     document.body.classList.toggle('chat-empty',!data?.messages?.length);$('empty').hidden=!!data?.messages?.length;$('messages').replaceChildren();
-    for(const m of data?.messages||[]){const row=node('article',null,'message '+m.role),label=node('div',null,'message-label');label.append(node('span',m.role==='user'?'Вы':'NormControl'));row.append(label,node('div',m.text));
+    for(const m of data?.messages||[]){const text=messageText(m),row=node('article',null,'message '+m.role),label=node('div',null,'message-label');label.append(node('span',m.role==='user'?'Вы':'NormControl'));row.append(label,node('div',text));
       for(const doc of m.metadata.documents||[])row.append(node('div',doc.name+' · '+(doc.role==='approved_reference'?'Как основание':'Проверить'),'doc-name'));
       if(m.metadata.kind==='model'){
         const pending=['queued','running'].includes(m.metadata.state);
         if(pending){const clock=node('span',null,'chat-elapsed');label.append(clock);modelClocks.push({node:clock,started:m.metadata.started_at,seconds:Math.max(0,(data.server_time||Date.now()/1000)-m.metadata.started_at)});}
         if(m.metadata.context_omitted)row.append(node('div','Использована последняя часть переписки: ранние сообщения не помещаются в контекст.','progress'));
         if(m.metadata.truncated)row.append(node('div','Ответ достиг ограничения длины. Можно попросить продолжение.','progress'));
-        const citations=(m.metadata.rag_sources||[]).filter(s=>m.text.includes('['+s.label+']')&&/^\/normcontol\/knowledge\//.test(s.url));
-        if(citations.length){const sources=node('div',null,'chat-rag-sources');sources.append(node('div','Источники из базы знаний'));for(const s of citations){const link=node('a','['+s.label+'] '+s.name+(s.locator?' · '+s.locator:''));link.href=s.url;link.target='_blank';link.rel='noopener';sources.append(link);}row.append(sources);}
+        const citations=(m.metadata.rag_sources||[]).filter(s=>text.includes('['+s.label+']')&&sourceUrl(s.url)),grouped=new Map();
+        for(const s of citations){const url=sourceUrl(s.url),g=grouped.get(url)||{...s,url,labels:[],locations:[]};if(!g.labels.includes(s.label))g.labels.push(s.label);const loc=sourceLocation(s.locator);if(loc&&!g.locations.includes(loc))g.locations.push(loc);grouped.set(url,g);}
+        if(grouped.size){const sources=node('div',null,'chat-rag-sources');sources.append(node('div','Источники из базы знаний — скачать документ'));for(const s of grouped.values()){const link=node('a','['+s.labels.join(', ')+'] '+s.name+(s.locations.length?' · '+s.locations.join('; '):''));link.href=s.url;link.target='_blank';link.rel='noopener';sources.append(link);}row.append(sources);}
         if(m.metadata.rag_trimmed)row.append(node('div','Материалы базы сокращены до доступного контекста модели.','progress'));
         if(pending||['failed','cancelled'].includes(m.metadata.state)){
           const controls=node('div',null,'actions'),action=pending?'cancel':'retry',button=node('button',pending?'Отменить ответ':'Повторить запрос');

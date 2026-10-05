@@ -115,7 +115,9 @@ class Bridge:
         from .model_profile import enabled as profile_control
         # A v5 worker must never resume a v4 model/transport snapshot.
         features=['context-budget-v5','check-log-v1','pipeline-v1','document-roles-v1']
-        if os.getenv('KNOWLEDGE_SEARCH_ONLY')=='1' or self.normative_index or (os.getenv('KNOWLEDGE_EMBEDDING_URL') and os.getenv('KNOWLEDGE_QDRANT_URL')):features.append('dialogue-rag-v1')
+        if os.getenv('KNOWLEDGE_SEARCH_ONLY')=='1' or self.normative_index or (os.getenv('KNOWLEDGE_EMBEDDING_URL') and os.getenv('KNOWLEDGE_QDRANT_URL')):
+            from .dialogue_search import SUPPORTED_VERSIONS
+            features.extend(SUPPORTED_VERSIONS)
         if profile_control():features.append('visual-tail-v1')
         claim=self.transport('/worker/claim/',{'protocol_version':2,'capabilities':capabilities,'features':features})['command']
         if claim is None:return False
@@ -128,8 +130,8 @@ class Bridge:
             payload=claim['payload']
             def authorize(sid):return self.transport('/worker/authorize/',dict(user_id=payload['actor_id'],set_id=sid,action='read')).get('allowed') is True
             if payload.get('dialogue_version'):
-                from .dialogue_search import VERSION,reference
-                if payload['dialogue_version']!=VERSION:raise ValueError('Dialogue retrieval version')
+                from .dialogue_search import SUPPORTED_VERSIONS,reference
+                if payload['dialogue_version'] not in SUPPORTED_VERSIONS:raise ValueError('Dialogue retrieval version')
                 found=reference(self.store,encoder,vector,authorize,payload)
             else:
                 found=HybridSearch(self.store,encoder,vector,authorize).reference(payload['release_id'],payload['query'],kinds=('requirement','term_definition'),profiles=payload.get('profiles'),limit=30)
@@ -202,20 +204,25 @@ class Bridge:
             finally:stopped.set();heart.join(timeout=1)
         elif claim['kind']=='review.execute':
             from .check_runtime import execute
-            stopped=threading.Event()
+            from .lease_heartbeat import renew_analysis_lease, check_review_lease
+            stopped=threading.Event();lease_lost=threading.Event()
+            # Persist metadata only, never lease credentials, request bodies or URLs.
+            journal=self.store.directory/'lease-health'/(str(uuid.UUID(claim['command_id']))+'.jsonl')
+            journal.parent.mkdir(parents=True,exist_ok=True)
+            def observe(event):
+                with journal.open('a',encoding='utf8') as stream:stream.write(json.dumps(event)+'\n')
             def renew_check():
-                while not stopped.wait(30):
-                    try:self.transport('/worker/renew/',{'command_id':claim['command_id'],'lease':claim['lease']})
-                    except Exception:
-                        # A transient portal outage must not permanently stop renewal.
-                        # Definitive lease loss is rejected by the next progress/report.
-                        continue
+                renew_analysis_lease(self.transport,claim,stopped,lease_lost,interval=30,observe=observe)
             heartbeat=threading.Thread(target=renew_check,daemon=True);heartbeat.start()
-            try:result=execute(self,claim,self.check_downloader,self.check_client,self.experience_index)
+            try:
+                result=execute(self,claim,self.check_downloader,self.check_client,self.experience_index,lease_cancel=lease_lost.is_set)
+                check_review_lease(lease_lost.is_set)
             except (ValueError,PermissionError):
-                self.fail(claim,'review_validation_failed',True);raise
+                if not lease_lost.is_set():self.fail(claim,'review_validation_failed',True)
+                raise
             except Exception:
-                self.fail(claim,'review_execution_failed',False);raise
+                if not lease_lost.is_set():self.fail(claim,'review_execution_failed',False)
+                raise
             finally:stopped.set();heartbeat.join(timeout=1)
         elif claim['kind']=='release.prepare':
             from .prepare import prepare

@@ -9,6 +9,7 @@ from pathlib import Path
 from .review import ReviewRunner,corpus,release_records
 from .review_client import LlamaClient
 from .store import checksum,Conflict,NotReady
+from .lease_heartbeat import check_review_lease
 from pipeline import QueuePaused
 
 
@@ -16,10 +17,16 @@ from .check_log import logged,emit
 
 class PreparationPaused(Exception):pass
 
+def review_wire_version(store,job_id):
+    from .review_wire import COMPACT_NORMS_VERSION,VERSION
+    with store.connection() as db:
+        prior=db.execute("SELECT json_extract(payload,'$.snapshot.versions.transport') FROM tasks WHERE dedupe_key=?",('review.run:'+job_id,)).fetchone()
+    return (prior[0] or VERSION) if prior else __import__('os').environ.get('NORMCONTROL_REVIEW_WIRE',COMPACT_NORMS_VERSION)
+
 @profiled('v2')
 @logged
-def execute(bridge,claim,download,client=None,experience_index=None):
-    try:return _execute(bridge,claim,download,client,experience_index)
+def execute(bridge,claim,download,client=None,experience_index=None,*,lease_cancel=None):
+    try:return _execute(bridge,claim,download,client,experience_index,lease_cancel=lease_cancel)
     except (PreparationPaused,QueuePaused) as interrupted:
         payload=claim['payload'];store=bridge.store
         with store.connection() as db:
@@ -33,15 +40,18 @@ def execute(bridge,claim,download,client=None,experience_index=None):
             limitations=['Ожидание ресурсов остановлено. Сохранённые ответы и контрольная точка сохранены.'])
         return store.remember_result(claim['command_id'],'review.execute',payload,result)
 
-def _execute(bridge,claim,download,client=None,experience_index=None):
+def _execute(bridge,claim,download,client=None,experience_index=None,*,lease_cancel=None):
+    check_review_lease(lease_cancel)
     payload=claim['payload'];store=bridge.store
     last_progress=None;last_wait_notice=-float('inf')
     def send_progress(value):
         nonlocal last_progress
+        check_review_lease(lease_cancel)
         last_progress=dict(value)
         return bridge.transport('/worker/checks/progress/',dict(command_id=claim['command_id'],lease=claim['lease'],job_id=payload['job_id'],progress=value))
     def queue_wait(ticket):
         nonlocal last_wait_notice
+        check_review_lease(lease_cancel)
         if bridge.stop_event.is_set():return True
         if time.monotonic()-last_wait_notice<5:return False
         last_wait_notice=time.monotonic()
@@ -52,6 +62,7 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
     if checksum(payload['snapshot'])!=payload['snapshot_digest']:raise Conflict('Portal snapshot digest')
     def preparing(stage,operation,**details):
         nonlocal last_progress
+        check_review_lease(lease_cancel)
         with store.connection() as db:
             saved=db.execute("SELECT id,cursor,json_array_length(payload,'$.batches') FROM tasks WHERE operation='review.run' AND dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone()
             if saved:
@@ -101,12 +112,13 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
             def shared_request(route,value):
                 req=urllib.request.Request(endpoint+route,data=json.dumps({'pipeline':pipeline,**value}).encode(),headers=headers)
                 with urllib.request.urlopen(req,timeout=15) as response:return json.load(response)
+            from .preparation_state import PreparationState
+            preparation_state=PreparationState()
             while True:
                 artifact=shared_request('/pipeline/artifact',{'metadata':True})
                 if artifact.get('ready'):break
-                statuses=shared_request('/pipeline/status',{})['phases']
-                if any(p['state']=='failed' for p in statuses if p['stage'] in ('material','normative_prepare')):raise NotReady('Shared preparation failed')
-                if any(p['state']=='paused' for p in statuses if p['stage'] in ('material','normative_prepare')):raise PreparationPaused()
+                status=shared_request('/pipeline/status',{})
+                if preparation_state.paused(status):raise PreparationPaused()
                 if preparing('parse','Общая подготовка документов на CPU') or bridge.stop_event.is_set():raise PreparationPaused()
                 time.sleep(2)
             from types import SimpleNamespace
@@ -121,7 +133,13 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
                 docs=[lookup[d['sha256']] for d in payload['documents']]
             shared_request('/pipeline/phase',{'stage':'normative','state':'running'})
         else:docs=corpus(paths)
-        model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store,queue_wait=queue_wait,**({'pipeline_id':pipeline} if pipeline else {}))
+        # Existing cursors retain their pinned transport; compact gaps apply to
+        # new plans only, so a resume never silently changes model input.
+        wire_version=review_wire_version(store,payload['job_id'])
+        model=client or LlamaClient(__import__('os').environ['NORMCONTROL_LLM_ENDPOINT'],context=49152,output_tokens=4096,timeout=300,store=store,queue_wait=queue_wait,wire_version=wire_version,**({'pipeline_id':pipeline} if pipeline else {}))
+        with store.connection() as db:
+            prior=db.execute("SELECT json_extract(payload,'$.snapshot.versions.shared_evidence') FROM tasks WHERE dedupe_key=?",('review.run:'+payload['job_id'],)).fetchone()
+        model.shared_evidence=(bool(prior[0]) if prior else __import__('os').environ.get('NORMCONTROL_SHARED_EVIDENCE','1')=='1') if client is None else getattr(client,'shared_evidence',False)
         model._queue_wait=queue_wait
         visual_enabled=payload.get('visual_version')=='visual-tail-v1'
         if visual_enabled:
@@ -228,6 +246,7 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
         visual_total=0;visual_result=None;visual_batches=[];visual_unplanned=[]
         phase='text'
         progress_floor=0
+        adaptive_operation=''
         def progress(task_id,completed,total,decisions=None):
             if completed:milestone('first_completed_batch_seconds')
             if any(d.get('outcome')=='violated' for d in (decisions or [])):milestone('first_violation_preview_seconds')
@@ -251,6 +270,17 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
                 except Exception:journal.append('log_delivery_error',dict(message='Будет повторено из сохранённого журнала'))
             return paused
         runner=ReviewRunner(store,model,authorize,owner=payload['actor_id'],experience_selector=selector,on_checkpoint=progress)
+        def adaptive_progress(done,total):
+            nonlocal adaptive_operation
+            adaptive_operation=f'Дополнительная полная проверка: фрагмент {done+1} из {total}'
+            current=getattr(runner,'_current_progress',None)
+            if current:
+                response=send_progress(dict(task_id=current[0],completed=current[1],total=current[2]+trace_total+visual_total,
+                    percent=round(current[1]/max(1,current[2]+trace_total+visual_total)*100,1),eta_seconds=None,
+                    preview=[],stage='text',operation=adaptive_operation))
+                return response.get('pause_requested') is True or bridge.stop_event.is_set()
+            return False
+        runner.on_adaptive=adaptive_progress
         from .model_queue import planning_turn as model_turn
         with model_turn(store,model):
             from .model_profile import ensure
@@ -260,6 +290,7 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
             def plan_probe():
                 nonlocal probes,last_probe
                 probes+=1
+                check_review_lease(lease_cancel)
                 if bridge.stop_event.is_set():raise PreparationPaused()
                 if time.monotonic()-last_probe<10:return
                 last_probe=time.monotonic()
@@ -272,7 +303,8 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
                     experience_releases=[payload['experience_release_id']] if payload.get('experience_release_id') else [],template_comparison=template_comparison,include_candidates=include_candidates)
             finally:model.on_plan_probe=previous_probe
             with store.connection() as db:
-                planned=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
+                from .plan_storage import unpack
+                planned=unpack(json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task_id,)).fetchone()[0]))
             from .check_log import compact_plan
             emit('plan',compact_plan(planned))
             if visual_enabled:
@@ -303,6 +335,7 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
         runner.pause(task_id,False)
         if progress(task_id,previous['progress']['completed'],previous['progress']['total']):
             runner.pause(task_id,True)
+        check_review_lease(lease_cancel)
         runner.run_once(task_id)
         report=runner.report(task_id)
         if report['state']=='failed':
@@ -357,6 +390,7 @@ def _execute(bridge,claim,download,client=None,experience_index=None):
         if trace_report and state!='paused':findings.extend(dict(r,category='traceability') for r in trace_report['rows'])
         hashes=[]
         for i in range(0,len(findings),10):
+            check_review_lease(lease_cancel)
             entries=findings[i:i+10];entry_hash=checksum(entries)
             answer=bridge.transport('/worker/checks/findings/',dict(command_id=claim['command_id'],lease=claim['lease'],
                 job_id=payload['job_id'],sequence=i//10,entries=entries,digest=entry_hash))

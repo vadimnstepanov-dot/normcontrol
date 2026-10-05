@@ -8,7 +8,7 @@ class DialogueSearchTests(unittest.TestCase):
     setUp=fixtures.SearchTests.setUp
     release=fixtures.SearchTests.release
     def retrieve(self,release,**values):
-        payload=dict(set_id='a',release_id=release,query='ошибки',limit=6);payload.update(values)
+        payload=dict(set_id='a',release_id=release,query='ошибки',limit=6,dialogue_version='dialogue-rag-v1');payload.update(values)
         return reference(self.store,self.encoder,self.vector,lambda sid:sid in self.allowed,
             payload)
     def test_original_fragment_source_and_canonical_quote_are_preserved(self):

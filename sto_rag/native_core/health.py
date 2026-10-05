@@ -5,7 +5,10 @@ from .transport import Transport,secret
 def check(mode):
     if mode=='gateway':
         cfg=json.loads(Path('/run/secrets/gateway.json').read_text())
-        transport=Transport(os.environ['NORMCONTROL_QUEUE_ENDPOINT'],cfg['token'],cfg['certificate'])
+        # Probe the container itself. Windows forwarding is an external dependency
+        # and may start later than Docker after a reboot. TLS still verifies the
+        # certificate's existing 127.0.0.1 subject alternative name.
+        transport=Transport('https://127.0.0.1:8098',cfg['token'],cfg['certificate'])
         assert transport.json('/core/health',timeout=4)['ready']
     elif mode=='api':
         with urllib.request.urlopen('http://127.0.0.1:8096/health',timeout=4) as response:assert json.load(response)['ready']

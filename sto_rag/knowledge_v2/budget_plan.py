@@ -3,10 +3,10 @@ from .store import checksum,encode
 from .performance import measured
 from bisect import bisect_left
 
-VERSION='context-budget-v5'
+VERSION='context-budget-v7'
 
 @measured('v2.budget_plan')
-def plan(rows,blocks,client,scope,max_group=8):
+def plan(rows,blocks,client,scope,max_group=16):
     from .review import request
     if not rows or not blocks:return [],list(rows)
     # Keep atoms from the same source clause together: their normative evidence
@@ -49,8 +49,18 @@ def plan(rows,blocks,client,scope,max_group=8):
             # Interpolate a candidate using measured endpoints and cheap text
             # weights. Weights choose only the probe: exact template counts
             # always decide fit, including the last accepted boundary.
-            end=start;high=len(blocks)
-            low_tokens=count(group,[]);high_tokens=count(group,blocks[start:high])
+            end=start
+            low_tokens=count(group,[])
+            # Probe near one context window, not the entire remaining document
+            # on every chunk. Expand measured bounds if the estimate is small;
+            # the tokenizer still decides every boundary without skipping text.
+            target=weights[start]+max(1,(budget-low_tokens)*2)
+            high=min(len(blocks),max(start+1,bisect_left(weights,target,start+1,len(weights))))
+            high_tokens=count(group,blocks[start:high])
+            while high_tokens<=budget and high<len(blocks):
+                end=high;low_tokens=high_tokens
+                high=min(len(blocks),start+2*(high-start))
+                high_tokens=count(group,blocks[start:high])
             if high_tokens<=budget:end=high
             else:
                 while high-end>1:
@@ -85,19 +95,22 @@ def plan(rows,blocks,client,scope,max_group=8):
     # actual requests, then repeated document text. Every candidate is measured
     # with the same template/tokenizer used for inference.
     if len(ordered)<=limit and fits(ordered,blocks):return build(ordered)
-    if len(ordered)>16:
+    if len(ordered)>16 or len(blocks)>1000:
         # Choose groups locally; measure only the selected groups. Exhaustive
         # token probes for every overlapping group dominate large documents.
         import math
         batches=[];failed=[];start=0
         document_weight=sum(len(b['text'])+40 for b in blocks)/3
         while start<len(ordered):
-            sizes=sorted({1,min(2,limit),min(4,limit),limit,min(limit,len(ordered)-start)})
+            sizes=sorted({1,min(2,limit),min(4,limit),min(8,limit),limit,min(limit,len(ordered)-start)})
             candidates=[]
             for size in sizes:
                 if start+size>len(ordered):continue
                 group=ordered[start:start+size]
-                overhead=len(encode(request(group,[],scope)))/3+512
+                # Estimate on the actual compact wire/template. Canonical JSON
+                # contains repeated provenance not sent to the model and can
+                # incorrectly reject otherwise efficient groups.
+                overhead=count(group,[])
                 available=budget-overhead
                 # Estimate selects a candidate only. Exact counts in build()
                 # decide every accepted boundary and oversized obligation.
@@ -136,11 +149,14 @@ def summary(rows,batches,oversized,docs):
     from collections import Counter
     text=sum(len(b['text']) for d in docs for b in d['blocks'])
     repeated=sum(len(b['text']) for batch in batches for b in batch['payload']['documents'])
-    return dict(strategy='bounded_greedy_large_scopes_exact_small_scopes_v5',
+    collectors=sum(b['payload'].get('stage')=='normative_collect' for b in batches)
+    return dict(strategy='shared_evidence_v1_adaptive_exhaustive' if collectors else 'bounded_greedy_large_scopes_exact_small_scopes_v7',
         documents=[dict(id=d['id'],type=d.get('classification',{}).get('type','unknown'),blocks=len(d['blocks']),
                         text_chars=sum(len(b['text']) for b in d['blocks']),gaps=len(d.get('gaps',[]))) for d in docs],
         applicability=dict(Counter(r['applicability']['result'] for r in rows)),
         analyzed_obligations=len({r['id'] for b in batches for r in b['payload']['obligations']}),
         oversized=len(oversized),tasks=len(batches),max_base_model_calls=2*len(batches),
         document_text_passes=round(repeated/max(1,text),2),
+        collection_tasks=collectors,collection_passes=2 if collectors else 0,
+        adaptive_exhaustive=bool(collectors),
         verification='decisive_proposals_only; unknown stays unknown',complete_scope_required=True)

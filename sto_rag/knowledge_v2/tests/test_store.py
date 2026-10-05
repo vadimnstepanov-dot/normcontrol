@@ -91,6 +91,18 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(Conflict):self.store.acknowledge(event['id'],'bad')
         self.store.acknowledge(event['id'],event['payload_hash']);self.assertFalse(self.store.pending_events())
 
+    def test_long_review_checkpoint_survives_host_stall_and_still_expires(self):
+        with patch('knowledge_v2.store.time.time',return_value=1000):
+            tid=self.store.enqueue('review.run','stall',{},max_attempts=3)
+            first=self.store.claim(ttl=600)
+            self.store.checkpoint(tid,first['lease'],{'results':{'one':'saved'}},ttl=600)
+            self.assertIsNone(self.store.claim(now=1240))
+        with patch('knowledge_v2.store.time.time',return_value=1601):
+            second=self.store.claim(ttl=600)
+            self.assertEqual(second['cursor'],{'results':{'one':'saved'}})
+            with self.assertRaises(Conflict):
+                self.store.checkpoint(tid,first['lease'],{},ttl=600)
+
     def test_tasks_recover_with_cursor_and_reject_stale_lease(self):
         tid=self.store.enqueue('extract','k',{'source':'s'},max_attempts=2)
         first=self.store.claim();self.store.checkpoint(tid,first['lease'],{'page':3})

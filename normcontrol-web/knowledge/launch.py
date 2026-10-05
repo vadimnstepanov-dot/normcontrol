@@ -71,7 +71,9 @@ class NewLaunchForm(LaunchForm):
 
 
 @transaction.atomic
-def start(user,batch_id,directions,set_ids,experience,key,*,logging_enabled=False):
+def start(user,batch_id,directions,set_ids,experience,key,*,logging_enabled=False,execution_order='parallel'):
+    if execution_order not in ('parallel','sto_first'):raise ValueError('Execution order')
+    if execution_order=='sto_first' and 'sto' not in directions:raise ValueError('STO first requires STO')
     batch=Batch.objects.select_for_update().get(pk=batch_id)
     if not can_edit(user,batch) or batch.archived:raise PermissionDenied('Batch owner required')
     if not directions or len(set(directions))!=len(directions) or set(directions)-{x[0] for x in CHECKS}:
@@ -80,12 +82,14 @@ def start(user,batch_id,directions,set_ids,experience,key,*,logging_enabled=Fals
     if previous:
         if (previous.payload.get('batch_id')!=str(batch.pk) or previous.payload.get('set_ids')!=sorted(set_ids)
             or previous.payload.get('directions')!=directions or previous.payload.get('experience_set_id')!=(experience or None)
-            or bool(previous.payload.get('logging',{}).get('enabled'))!=logging_enabled):
+            or bool(previous.payload.get('logging',{}).get('enabled'))!=logging_enabled
+            or previous.payload.get('execution_order','parallel')!=execution_order):
             raise Conflict('Повтор запуска отличается от первоначального запроса.')
         return KnowledgeCheck.objects.get(pk=previous.payload['job_id'])
     run=WorkerRun.objects.filter(batch=batch).first()
     # A running legacy review may gain a normative stage, but is never reset or reconfigured.
     attach=bool(run)
+    if attach and execution_order=='sto_first':raise Conflict('Restart the package to change execution order')
     if attach:
         if logging_enabled!=batch.logging_enabled:raise Conflict('Для уже идущей проверки нельзя изменить запись журнала. Создайте повторную проверку с нужной опцией.')
         if 'sto' not in directions or set(directions)-{'sto'}!=set(batch.checks)-{'sto'}:
@@ -100,13 +104,14 @@ def start(user,batch_id,directions,set_ids,experience,key,*,logging_enabled=Fals
         from portal.models import WorkerPresence
         from django.utils import timezone
         from datetime import timedelta
-        pipeline=bool(legacy and not run and WorkerPresence.objects.filter(details__pipeline_version='pipeline-v1',state__in=['idle','busy'],heartbeat__gte=timezone.now()-timedelta(seconds=90)).exists())
+        pipeline=bool(execution_order!='sto_first' and legacy and not run and WorkerPresence.objects.filter(details__pipeline_version='pipeline-v1',state__in=['idle','busy'],heartbeat__gte=timezone.now()-timedelta(seconds=90)).exists())
         job,c=checks.start(user,batch.pk,set_ids,experience or None,str(key),workflow={
-            'unified_launch':True,'after_non_normative':bool(legacy or run),'directions':list(directions),
+            'unified_launch':True,'after_non_normative':bool(legacy or run) and execution_order!='sto_first','directions':list(directions),
+            **({'execution_order':'sto_first'} if execution_order=='sto_first' else {}),
             **({'pipeline_version':'pipeline-v1'} if pipeline else {})})
     batch.checks=list(directions)
     if not attach:
-        batch.status='waiting' if legacy else 'running'
+        batch.status='waiting' if legacy and execution_order!='sto_first' else 'running'
         batch.queue_position=(Batch.objects.filter(status='waiting').aggregate(n=Max('queue_position'))['n'] or 0)+1 if legacy else 0
     elif run.state in ('completed','partial'):
         batch.status='running'
@@ -127,6 +132,7 @@ def dependency_ready(command):
         command.save(update_fields=['state','result'])
         return False
     if job.pause_requested or job.state=='paused':return False
+    if command.payload.get('execution_order')=='sto_first':return batch.status not in ('paused','failed')
     if command.payload.get('pipeline_version')=='pipeline-v1':
         if batch.status in ('paused','failed'):return False
         run=WorkerRun.objects.filter(batch=batch).first()
@@ -153,8 +159,15 @@ def reconcile(batch):
     job=KnowledgeCheck.objects.get(pk=command.payload['job_id'])
     run=WorkerRun.objects.filter(batch=batch).first()
     if run and run.state not in ('completed','partial','failed','cancelled'):state=run.state if run.state!='claimed' else 'waiting'
+    elif run and run.state=='failed':state='failed'
     elif job.state in ('queued','running'):state='running'
     elif job.state=='paused':state='paused'
     elif job.state=='failed':state='failed'
+    elif not run and command.payload.get('execution_order')=='sto_first' and set(batch.checks)-{'sto'}:state='waiting'
     else:state='partial' if job.state=='partial' or (run and run.state!='completed') else 'completed'
     Batch.objects.filter(pk=batch.pk).update(status=state)
+
+def native_ready(batch):
+    command=Command.objects.filter(kind='review.execute',payload__batch_id=str(batch.pk),payload__execution_order='sto_first').order_by('-created').first()
+    if not command:return True
+    return KnowledgeCheck.objects.filter(pk=command.payload['job_id'],state__in=('completed','partial')).exists()

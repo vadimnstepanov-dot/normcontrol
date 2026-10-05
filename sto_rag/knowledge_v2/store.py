@@ -405,10 +405,10 @@ class KnowledgeStore:
             db.execute("UPDATE tasks SET state='running',attempts=attempts+1,lease=?,lease_until=? WHERE id=?",(lease,now+ttl,r['id']))
             return dict(id=r['id'],operation=r['operation'],payload=json.loads(r['payload']),cursor=json.loads(r['cursor']),lease=lease)
 
-    def checkpoint(self, task_id, lease, cursor, done=False):
+    def checkpoint(self, task_id, lease, cursor, done=False, *, ttl=60):
         with self.connection() as db:
             n=db.execute("UPDATE tasks SET cursor=?,state=?,lease_until=? WHERE id=? AND lease=? AND state='running' AND lease_until>?",
-                         (encode(cursor),'done' if done else 'running',time.time()+60,task_id,lease,time.time())).rowcount
+                         (encode(cursor),'done' if done else 'running',time.time()+ttl,task_id,lease,time.time())).rowcount
             if n!=1:raise Conflict('Expired or stale task lease')
 
     def fail_task(self, task_id, lease, reason, permanent=False):

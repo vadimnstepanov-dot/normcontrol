@@ -1,4 +1,4 @@
-# Установка NormControl 1.0.0 на Linux
+# Установка NormControl 1.1.0 на Linux
 
 Linux поддерживает два режима:
 
@@ -21,7 +21,7 @@ sudo apt install -y git python3 python3-venv python3-pip
 ## 2. Получение проекта
 
 ```bash
-git clone --branch 1.0.0 https://github.com/vadimnstepanov-dot/normcontrol.git
+git clone --branch 1.1.0 https://github.com/vadimnstepanov-dot/normcontrol.git
 cd normcontrol
 ```
 

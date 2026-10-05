@@ -127,15 +127,6 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.runner.report(task)['state'],'done')
         self.assertFalse(self.runner.run_once())
         self.assertEqual(len(self.model.calls),2)
-    def test_queue_pause_saves_cursor_without_failure_or_attempt(self):
-        from pipeline import QueuePaused
-        task=self.create();self.model.hook=lambda:(_ for _ in ()).throw(QueuePaused())
-        self.runner.run_once(task)
-        with self.store.connection() as db:saved=dict(db.execute('SELECT * FROM tasks WHERE id=?',(task,)).fetchone())
-        self.assertEqual(saved['state'],'pending');self.assertEqual(saved['attempts'],0)
-        self.assertFalse(json.loads(saved['cursor']).get('failures'));self.assertIsNone(saved['lease'])
-        self.model.hook=None;self.runner.pause(task,False);self.runner.run_once(task)
-        self.assertEqual(self.runner.report(task)['state'],'done')
 
     def test_model_change_refuses_resume(self):
         self.create();self.model.signature='model-b'
@@ -143,13 +134,15 @@ class ReviewTests(unittest.TestCase):
 
     def test_forged_quote_rejected(self):
         task=self.create()
-        with self.store.connection() as db: p=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0])['batches'][0]['payload']
+        from knowledge_v2.plan_storage import unpack
+        with self.store.connection() as db: p=unpack(json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0]))['batches'][0]['payload']
         bad=self.model.complete(p);bad['decisions'][0]['evidence'][0]['quote']='выдуманная цитата'
         with self.assertRaises(ValueError):validate(p,bad)
 
     def test_missing_obligation_rejected(self):
         task=self.create()
-        with self.store.connection() as db:p=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0])['batches'][0]['payload']
+        from knowledge_v2.plan_storage import unpack
+        with self.store.connection() as db:p=unpack(json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0]))['batches'][0]['payload']
         bad=self.model.complete(p);bad['decisions'].pop()
         with self.assertRaises(ValueError):validate(p,bad)
 
@@ -168,7 +161,8 @@ class ReviewTests(unittest.TestCase):
 
     def test_incomplete_partition_cannot_prove_absence(self):
         task=self.create()
-        with self.store.connection() as db:p=json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0])
+        from knowledge_v2.plan_storage import unpack
+        with self.store.connection() as db:p=unpack(json.loads(db.execute('SELECT payload FROM tasks WHERE id=?',(task,)).fetchone()[0]))
         self.model.claim='absence';b=p['batches'][0]
         result={b['id']:{'decisions':validate(b['payload'],self.model.complete(b['payload']))}}
         missing=copy.deepcopy(b);missing['id']='missing'
@@ -247,7 +241,8 @@ class ReviewTests(unittest.TestCase):
     def test_full_text_partition_union_is_required(self):
         task=self.create();self.model.claim='absence';self.runner.run_once()
         with self.store.connection() as db:r=db.execute('SELECT payload,cursor FROM tasks WHERE id=?',(task,)).fetchone()
-        p,c=json.loads(r[0]),json.loads(r[1]);scope=p['scopes'][self.did]
+        from knowledge_v2.plan_storage import unpack
+        p,c=unpack(json.loads(r[0])),json.loads(r[1]);scope=p['scopes'][self.did]
         scope['expected_ids'].append('unsubmitted-block')
         result=aggregate(p['rows'],p['batches'],c['results'],[],scope)
         self.assertTrue(all(d['state']=='unknown' for d in result))

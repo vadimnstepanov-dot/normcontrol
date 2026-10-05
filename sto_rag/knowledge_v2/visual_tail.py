@@ -67,7 +67,7 @@ def prepare(paths,docs,store):
         doc['visual_inventory']=inventory
 
 @measured('v2.vision.plan')
-def plan(rows,docs,client):
+def plan(rows,docs,client,max_group=16):
     from .review import request
     batches=[];unplanned=[]
     for doc in docs:
@@ -108,7 +108,8 @@ def plan(rows,docs,client):
                     unplanned.append(dict(document_id=doc['id'],locator=image['locator'],obligation_id=group[0]['id'],reason='Complete visual evidence and norm exceed context; no truncation'))
                 else:
                     mid=len(group)//2;split(group[:mid]);split(group[mid:])
-            for i in range(0,len(selected),8):split(selected[i:i+8])
+            limit=max(1,min(max_group,client.output_tokens//128 or 1))
+            for i in range(0,len(selected),limit):split(selected[i:i+limit])
     return batches,unplanned
 
 def render(store,image):

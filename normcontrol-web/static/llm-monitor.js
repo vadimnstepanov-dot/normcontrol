@@ -6,7 +6,7 @@ const llmPanel=document.getElementById('llm-monitor');
 if(llmPanel){
   const labels={online:'Работа модели',vram_used_mb:'Память GPU, МиБ',gpu_percent:'Загрузка GPU, %',cpu_percent:'Загрузка CPU, %',ram_used_mb:'Оперативная память, МиБ',generation_tps:'Генерация, ток/с',prefill_tps:'Prefill, ток/с',uptime_seconds:'Время работы модели, с'};
   const fields={online:'llm-online',vram_used_mb:'llm-vram',gpu_percent:'llm-gpu',cpu_percent:'llm-cpu',ram_used_mb:'llm-ram',generation_tps:'llm-generation',prefill_tps:'llm-prefill'};
-  let history=[],opened='',timer=null,busy=false,uptimeBase=null,uptimeAt=0;
+  let history=[],opened='',timer=null,busy=false,uptimeBase=null,uptimeAt=0,commandSending=false;
   const setText=(id,value)=>{const element=document.getElementById(id);if(element)element.textContent=value;};
   const metric=value=>typeof value==='number'?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(value):'—';
   const speed=value=>llmPanel.closest('.chat-topbar')&&typeof value==='number'&&value>=1000?metric(value/1000)+'к':metric(value);
@@ -106,10 +106,10 @@ if(llmPanel){
         sample.note||'Замеры раз в минуту. Скорости — по последнему рабочему запросу.';
       setText('llm-monitor-note',note);
       const controls=document.getElementById('llm-controls');if(controls)for(const button of controls.querySelectorAll('[data-llm-action]')){
-        const action=button.dataset.llmAction;button.disabled=!data.telemetry_fresh||pending||(action==='start'?on:!on);
+        const action=button.dataset.llmAction;button.disabled=!data.telemetry_fresh||pending||commandSending||(action==='start'?on:action==='stop'?!on:false);
       }
       draw();
-    }catch(error){setText('llm-monitor-note','Не удалось получить показатели LLM.');uptimeBase=null;tickUptime();}
+    }catch(error){setText('llm-monitor-note','Не удалось получить показатели LLM.');llmPanel.querySelectorAll('[data-llm-action]').forEach(button=>button.disabled=true);uptimeBase=null;tickUptime();}
     finally{busy=false;timer=setTimeout(refresh,pending?5000:60000);}
   }
   llmPanel.querySelectorAll('[data-llm-chart]').forEach(button=>button.addEventListener('click',()=>{
@@ -120,11 +120,12 @@ if(llmPanel){
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&opened)closeChart();});
   document.addEventListener('pointerdown',event=>{if(opened&&!llmPanel.contains(event.target))closeChart();});
   llmPanel.querySelectorAll('[data-llm-action]').forEach(button=>button.addEventListener('click',async()=>{
-    const action=button.dataset.llmAction;button.disabled=true;
+    if(commandSending)return;commandSending=true;
+    const action=button.dataset.llmAction;llmPanel.querySelectorAll('[data-llm-action]').forEach(item=>item.disabled=true);
     try{const response=await fetch(llmPanel.dataset.actionUrl,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({action})});
       const value=await response.json();if(!response.ok)throw Error(value.error||'Команда не принята');
       setText('llm-monitor-note','Команда передана. Текущая задача будет завершена и сохранена перед переключением модели.');
-    }catch(error){setText('llm-monitor-note',error.message);}finally{refresh();}
+    }catch(error){setText('llm-monitor-note',error.message);}finally{commandSending=false;refresh();}
   }));
   refresh();setInterval(tickUptime,1000);
 }

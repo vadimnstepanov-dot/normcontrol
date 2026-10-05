@@ -1,4 +1,14 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
+test('saved Office POST links become downloads; duplicate appendix is hidden, permissions paths remain internal',()=>{
+ const url='/normcontol/knowledge/normative-sets/area/sources/source/open/';
+ const c={id:'chat',messages:[{role:'assistant',text:'Вывод [S1] и [S2].\n\nИсточники из RAG:\n[S1] Документ — [открыть источник](https://portal.example'+url+')\n[S2] Документ — ссылка\n\nОграничения поиска: Пример.',metadata:{kind:'model',state:'done',rag_sources:[{label:'S1',name:'Документ',locator:'p62',url},{label:'S2',name:'Документ',locator:'t1/r1/c3',url}]}}]};
+ const row=app(c).element('messages').children[0],sources=row.children.find(n=>n.className==='chat-rag-sources');
+ assert.equal(row.children[1].textContent,'Вывод [S1] и [S2].\n\nОграничения поиска: Пример.');
+ assert.equal(sources.children.length,2);
+ assert.equal(sources.children[1].href,url.replace('/knowledge/','/api/v2/').replace('/open/','/download/'));
+ assert.match(sources.children[1].textContent,/абзац 62/);assert.match(sources.children[1].textContent,/таблица 1, строка 1, ячейка 3/);
+ assert.equal(app({id:'chat',messages:[{role:'user',text:c.messages[0].text,metadata:{}}]}).element('messages').children[0].children[1].textContent,c.messages[0].text);
+});
 test('RAG links are shown only for cited internal sources and titles remain plain text',()=>{
  const c={id:'chat',messages:[{role:'assistant',text:'Вывод [S1].',metadata:{kind:'model',state:'done',rag_sources:[{label:'S1',name:'<script>title</script>',locator:'4.2',url:'/normcontol/knowledge/areas/fixture/'},{label:'S2',name:'Unused',url:'/normcontol/knowledge/areas/unused/'},{label:'S1',name:'External',url:'https://outside.test/'}]}}]};
  const row=app(c).element('messages').children[0],sources=row.children.find(n=>n.className==='chat-rag-sources');

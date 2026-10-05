@@ -1,17 +1,14 @@
-import json
 import unittest
-from unittest.mock import patch
-
-from native_core.health import check
-
+from unittest.mock import patch,Mock
+from native_core import health
 
 class GatewayHealthTests(unittest.TestCase):
-    def test_uses_installation_endpoint_instead_of_workstation_address(self):
-        config = {'token': 'synthetic-test-token', 'certificate': '/test/gateway.crt'}
-        with patch.dict('os.environ', NORMCONTROL_QUEUE_ENDPOINT='https://test-gateway:8098'), \
-                patch('native_core.health.Path.read_text', return_value=json.dumps(config)), \
-                patch('native_core.health.Transport') as transport:
-            transport.return_value.json.return_value = {'ready': True}
-            check('gateway')
-        transport.assert_called_once_with('https://test-gateway:8098', config['token'], config['certificate'])
-        transport.return_value.json.assert_called_once_with('/core/health', timeout=4)
+    def test_gateway_health_has_no_windows_forwarder_dependency(self):
+        client=Mock();client.json.return_value={'ready':True}
+        with patch.object(health.Path,'read_text',return_value='{"token":"fixture","certificate":"cert"}'),patch.object(health,'Transport',return_value=client) as transport:
+            health.check('gateway')
+        transport.assert_called_once_with('https://127.0.0.1:8098','fixture','cert')
+        client.json.assert_called_once_with('/core/health',timeout=4)
+    def test_unready_gateway_is_not_reported_healthy(self):
+        client=Mock();client.json.return_value={'ready':False}
+        with patch.object(health.Path,'read_text',return_value='{"token":"fixture","certificate":"cert"}'),patch.object(health,'Transport',return_value=client),self.assertRaises(AssertionError):health.check('gateway')

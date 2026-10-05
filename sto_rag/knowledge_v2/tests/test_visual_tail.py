@@ -43,6 +43,19 @@ class InventoryTests(unittest.TestCase):
         batches,gaps=vt.plan([],self.docs,self.model)
         self.assertEqual(batches,[]);self.assertTrue(gaps)
 
+    def test_larger_groups_keep_every_image_obligation_pair_and_context(self):
+        self.model.output_tokens=4096;self.model.context=49152
+        self.model.count=lambda packet:100+len(packet['obligations'])*100
+        rows=[dict(self.rows[0],id='r'+str(i)) for i in range(24)]
+        old,gaps=vt.plan(rows,self.docs,self.model,max_group=8)
+        new,new_gaps=vt.plan(rows,self.docs,self.model,max_group=16)
+        self.assertEqual(gaps,new_gaps);self.assertEqual(len(old),3);self.assertEqual(len(new),2)
+        pairs=lambda batches:[(b['image']['sha256'],r['id']) for b in batches for r in b['payload']['obligations']]
+        self.assertEqual(pairs(old),pairs(new))
+        for b in new:
+            self.assertEqual(b['image']['occurrences'],old[0]['image']['occurrences'])
+            self.assertEqual(b['payload']['documents'],old[0]['payload']['documents'])
+
     def test_modified_asset_refused(self):
         item=self.docs[0]['visual_inventory']['items'][0]
         (self.store.directory/'review-visuals'/item['document_id']/item['original']).write_bytes(b'changed')

@@ -271,7 +271,10 @@ def request(rows, blocks, scope, stage='check', proposed=None):
     return value
 
 
-def plan(rows, blocks, client, scope, max_group=8):
+def plan(rows, blocks, client, scope, max_group=16):
+    if getattr(client,'shared_evidence',False):
+        from .shared_evidence import plan as collect
+        return collect(rows,blocks,client,scope)
     from .budget_plan import plan as optimize
     return optimize(rows,blocks,client,scope,max_group)
 
@@ -313,10 +316,13 @@ def validate(payload, raw):
 def aggregate(rows, batches, results, oversized, scope):
     decisions = []
     for row in rows:
-        expected = [b for b in batches if row['id'] in {r['id'] for r in b['payload']['obligations']}]
+        expected = [b for b in batches if b['payload'].get('stage')!='normative_collect' and row['id'] in {r['id'] for r in b['payload']['obligations']}]
         observed = [d for b in expected for d in results.get(b['id'], {}).get('decisions', []) if d['obligation_id'] == row['id']]
         submitted = {block['id'] for batch in expected for block in batch['payload']['documents']}
         complete_scope = submitted == set(scope['expected_ids']) and not scope['gaps']
+        presence_scope=bool(expected) and not scope['gaps'] and all(results.get(b['id'],{}).get('experience',{}).get('shared_presence_scope')==checksum(scope['expected_ids']) for b in expected)
+        if expected and not scope['gaps'] and all(results.get(b['id'],{}).get('experience',{}).get('exhaustive_scope')==checksum(scope['expected_ids']) for b in expected):
+            complete_scope=True
         state, reason = 'unknown', 'No complete verified decision'
         applicable = row['applicability']['result']
         issues = list(row['issues'])
@@ -329,8 +335,8 @@ def aggregate(rows, batches, results, oversized, scope):
                 state, reason = 'violated', contradictions[0]['reason']
             elif all(x['outcome'] == 'violated' and x['claim'] == 'absence' for x in observed) and complete_scope:
                 state, reason = 'violated', 'Absence verified across every planned text partition'
-            elif all(x['outcome'] == 'satisfied' for x in observed) and complete_scope:
-                state, reason = 'checked', 'Positive evidence verified across all partitions'
+            elif all(x['outcome'] == 'satisfied' for x in observed) and (complete_scope or presence_scope):
+                state, reason = 'checked', 'Positive evidence independently verified after exhaustive shared collection' if presence_scope else 'Positive evidence verified across all partitions'
         if row in oversized: issues.append('Atomic normative context or document block exceeds token budget')
         preliminary_violation=bool(row.get('preliminary_only') and not row.get('execution_issues',issues)
             and applicable=='applicable' and observed and len(observed)==len(expected)
@@ -436,6 +442,9 @@ class ReviewRunner:
                         profile_definitions=checksum([r['profile_versions'] for r in rows]),
                         settings=dict(context=self.client.context, output=self.client.output_tokens),
                         documents=[d['sha256'] for d in docs], facts=checksum(facts))
+        if getattr(self.client,'shared_evidence',False):
+            from .shared_evidence import VERSION as COLLECTION_VERSION
+            versions['shared_evidence']=COLLECTION_VERSION
         if any(d.get('review_role')=='approved_reference' for d in docs):
             versions['review_roles']=checksum([{d['id']:d.get('review_role','unassigned')} for d in docs])
         if experience_releases:
@@ -487,7 +496,8 @@ class ReviewRunner:
         if include_candidates:payload['include_candidates']=True
         from .budget_plan import summary
         payload['planning']=summary(rows,batches,oversized,docs)
-        return self.store.enqueue('review.run', 'review.run:' + job_id, payload)
+        from .plan_storage import pack
+        return self.store.enqueue('review.run', 'review.run:' + job_id, pack(payload))
 
     def pause(self, task_id, paused=True):
         report = self.report(task_id)  # Ownership and current ACL are required for controls too.
@@ -556,7 +566,10 @@ class ReviewRunner:
                 proposed = validate(batch['payload'], raw)
                 decisive=[d for d in proposed if d['outcome']!='unknown']
                 if not decisive:
-                    return proposed,{'check':check.get('experience',[]),'verify':[],'verification_skipped':'No positive conclusion'}
+                    experience={'check':check.get('experience',[]),'verify':[],'verification_skipped':'No positive conclusion'}
+                    value=dict(state='done',decisions=proposed,experience=experience)
+                    atomic_json(path,dict(value=value,digest=checksum(value)))
+                    return proposed,experience
                 selected_ids={d['obligation_id'] for d in decisive}
                 verify = dict(batch['payload'],stage='verify',proposed=decisive,
                               obligations=[r for r in batch['payload']['obligations'] if r['id'] in selected_ids])
@@ -569,7 +582,11 @@ class ReviewRunner:
                     verified = validate(verify, self._complete(verify))
                 self._check(payload)
                 by_id={d['obligation_id']:d for d in verified}
-                return [by_id.get(d['obligation_id'],d) for d in proposed], {'check':check.get('experience', []),'verify':verify.get('experience', [])}
+                decisions=[by_id.get(d['obligation_id'],d) for d in proposed]
+                experience={'check':check.get('experience', []),'verify':verify.get('experience', [])}
+                value=dict(state='done',decisions=decisions,experience=experience)
+                atomic_json(path,dict(value=value,digest=checksum(value)))
+                return decisions,experience
             except (Conflict, NotReady): raise
             except ValueError as exc:
                 feedback = ('Предыдущий ответ отклонён: ' + str(exc) + '. Исправь формат и доказательства; '
@@ -592,7 +609,8 @@ class ReviewRunner:
                      if k in ('prompt_n','prompt_ms','prompt_per_second','predicted_n','predicted_ms','predicted_per_second','cache_n','draft_n','draft_n_accepted') and type(v) in (int,float)}
             usage={k:v for k,v in getattr(self.client,'last_usage',{}).items()
                    if k in ('prompt_tokens','completion_tokens','total_tokens') and type(v) is int}
-            if hasattr(self,'_calls'):self._calls.append(dict(stage=request['stage'],seconds=time.monotonic()-started,usage=usage,timings=timings))
+            if hasattr(self,'_calls'):self._calls.append(dict(stage=request['stage'],seconds=time.monotonic()-started,usage=usage,timings=timings,
+                document_blocks=len(request.get('documents',[])),document_text_chars=sum(len(b['text']) for b in request.get('documents',[]))))
             from .telemetry import publish
             # A diagnostic file failure must never invalidate a saved model answer.
             try:publish(self.store.directory,timings,request['stage'])
@@ -645,9 +663,14 @@ class ReviewRunner:
             else:
                 ready = db.execute("SELECT t.id FROM tasks t LEFT JOIN review_controls c ON c.task_id=t.id WHERE t.operation='review.run' AND json_extract(t.payload,'$.owner')=? AND (t.state='pending' OR (t.state='running' AND t.lease_until<=?)) AND COALESCE(c.paused,0)=0 ORDER BY t.created,t.id LIMIT 1", (self.owner,time.time())).fetchone()
         if not ready: return False
-        task = self.store.claim(operation='review.run', ttl=120, task_id=ready['id'])
+        # Keep the local lease longer than the portal's transient-outage window.
+        # Short host/WSL stalls must not invalidate a still-owned review cursor.
+        lease_ttl = 600
+        task = self.store.claim(operation='review.run', ttl=lease_ttl, task_id=ready['id'])
         if not task: return False
-        payload, cursor = task['payload'], task['cursor']
+        self._active_review_task=task['id']
+        from .plan_storage import unpack
+        payload, cursor = unpack(task['payload']), task['cursor']
         cursor.setdefault('results', {}); cursor.setdefault('failures', {})
         stop, lost = threading.Event(), threading.Event()
         def heartbeat():
@@ -655,13 +678,14 @@ class ReviewRunner:
                 try:
                     with self.store.connection() as db:
                         count = db.execute("UPDATE tasks SET lease_until=? WHERE id=? AND lease=? AND state='running' AND lease_until>?",
-                            (time.time()+120, task['id'], task['lease'], time.time())).rowcount
+                            (time.time()+lease_ttl, task['id'], task['lease'], time.time())).rowcount
                         if count != 1: lost.set(); return
                 except Exception: lost.set(); return
         thread = threading.Thread(target=heartbeat, daemon=True); thread.start()
         try:
             self._check(payload)
             for batch in payload['batches']:
+                self._current_progress=(task['id'],len(cursor['results'])+len(cursor['failures']),len(payload['batches']))
                 if self._paused(task['id']):
                     with self.store.connection() as db:
                         db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND lease=?",
@@ -672,15 +696,19 @@ class ReviewRunner:
                 start = time.monotonic()
                 self._calls=[]
                 try:
-                    verified, experience = self._execute(payload, batch)
+                    if batch.get('collectors') or batch['payload'].get('stage')=='normative_collect':
+                        from .shared_evidence import execute
+                        verified,experience=execute(self,payload,batch,cursor['results'])
+                    else:verified, experience = self._execute(payload, batch)
                     if lost.is_set(): raise Conflict('Review lease lost')
                     cursor['results'][batch['id']] = dict(decisions=verified, seconds=time.monotonic()-start,
                                                         completeness=batch['payload']['completeness'],experience=experience,model_calls=self._calls)
+                    if 'collection' in experience:cursor['results'][batch['id']]['collection']=experience['collection']
                     cursor['failures'].pop(batch['id'], None)
                 except (ValueError, RuntimeError) as exc:
                     if isinstance(exc, (Conflict, NotReady)): raise
                     cursor['failures'][batch['id']] = dict(error=str(exc)[:500], seconds=time.monotonic()-start,model_calls=self._calls)
-                self.store.checkpoint(task['id'], task['lease'], cursor)
+                self.store.checkpoint(task['id'], task['lease'], cursor, ttl=lease_ttl)
                 if self.on_checkpoint:
                     try:
                         if self.on_checkpoint(task['id'],len(cursor['results'])+len(cursor['failures']),len(payload['batches']),
@@ -690,9 +718,9 @@ class ReviewRunner:
                     except Exception:
                         # The durable local cursor is authoritative during a portal outage.
                         pass
-            self.store.checkpoint(task['id'], task['lease'], cursor, done=True)
+            self.store.checkpoint(task['id'], task['lease'], cursor, done=True, ttl=lease_ttl)
         except __import__('pipeline').QueuePaused:
-            self.store.checkpoint(task['id'],task['lease'],cursor)
+            self.store.checkpoint(task['id'],task['lease'],cursor,ttl=lease_ttl)
             with self.store.connection() as db:
                 db.execute("UPDATE tasks SET state='pending',attempts=MAX(0,attempts-1),lease=NULL,lease_until=NULL WHERE id=? AND lease=?",(task['id'],task['lease']))
                 db.execute('INSERT INTO review_controls VALUES(?,1) ON CONFLICT(task_id) DO UPDATE SET paused=1',(task['id'],))
@@ -701,13 +729,15 @@ class ReviewRunner:
             raise
         finally:
             stop.set(); thread.join(2)
+            self._active_review_task=None
         return True
 
     def report(self, task_id):
         with self.store.connection() as db:
             row = db.execute("SELECT * FROM tasks WHERE id=? AND operation='review.run'", (task_id,)).fetchone()
         if not row: raise KeyError(task_id)
-        payload, cursor = json.loads(row['payload']), json.loads(row['cursor'])
+        from .plan_storage import unpack
+        payload, cursor = unpack(json.loads(row['payload'])), json.loads(row['cursor'])
         if payload['owner'] != self.owner: raise PermissionError('Review owner mismatch')
         self.store.read_snapshot(payload['snapshot_id'], self.authorize)
         decisions = []
@@ -735,7 +765,8 @@ class ReviewRunner:
             scope_findings=scope_findings(decisions),
             candidate_analysis=dict(enabled=bool(payload.get('include_candidates')),obligations=len(candidate_rows),
                 applicable=sum(r['applicability']['result']=='applicable' and not r['execution_issues'] for r in candidate_rows)),
-            planning=payload.get('planning',{}),performance=dict(model_calls=len(calls),
+            planning=dict(payload.get('planning',{}),fallback_parts=sum(r.get('experience',{}).get('fallback_parts',0) for r in cursor.get('results',{}).values())),performance=dict(model_calls=len(calls),
+                document_text_passes_sent=round(sum(c.get('document_text_chars',0) for c in calls)/max(1,sum(len(b['text']) for d in payload['documents'] for b in d['blocks'])),2),
                 model_call_seconds=sum(c['seconds'] for c in calls),
                 prompt_ms=sum(c['timings'].get('prompt_ms',0) for c in calls),
                 predicted_ms=sum(c['timings'].get('predicted_ms',0) for c in calls),

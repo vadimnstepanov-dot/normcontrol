@@ -6,6 +6,17 @@ from knowledge_v2.store import KnowledgeStore
 from knowledge_v2.check_runtime import execute,PreparationPaused
 
 class PlanningCacheTests(unittest.TestCase):
+ def test_new_plan_compacts_gaps_and_resume_keeps_original_wire(self):
+  from knowledge_v2.check_runtime import review_wire_version
+  from knowledge_v2.review_wire import VERSION,GROUPED_VERSION,COMPACT_NORMS_VERSION
+  with tempfile.TemporaryDirectory() as folder,patch.dict('os.environ',{},clear=True):
+   store=KnowledgeStore(folder)
+   self.assertEqual(review_wire_version(store,'new'),COMPACT_NORMS_VERSION)
+   store.enqueue('review.run','review.run:old',{'snapshot':{'versions':{'transport':VERSION}}})
+   self.assertEqual(review_wire_version(store,'old'),VERSION)
+   with patch.dict('os.environ',{'NORMCONTROL_REVIEW_WIRE':GROUPED_VERSION}):
+    self.assertEqual(review_wire_version(store,'old'),VERSION)
+
  def client(self,store,signature='model-a'):
   c=LlamaClient.__new__(LlamaClient);c.store=store;c.signature=signature;c._counts={};c._schema_counts={}
   c.request=lambda p:{'messages':[{'content':p['text']}],'response_format':{'schema':'stable'}}

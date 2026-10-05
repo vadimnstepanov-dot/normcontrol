@@ -271,9 +271,11 @@ def start_backend(profile=None):
     if profile is not None:
         if profile not in ('text','vision'):raise ValueError('Model profile')
         environment['NORMCONTROL_LLM_PROFILE']=profile
-    subprocess.Popen(command,cwd=str(LAUNCHER.parent),env=environment,
-        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    DATA.mkdir(parents=True,exist_ok=True)
+    with (DATA/'model-backend.log').open('wb') as log:
+        subprocess.Popen(command,cwd=str(LAUNCHER.parent),env=environment,
+            stdin=subprocess.DEVNULL,stdout=log,stderr=log,
+            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     deadline=time.monotonic()+180
     while time.monotonic()<deadline:
         if ready():return
@@ -372,6 +374,8 @@ def main(envfile):
     from memory_reclaim import Reclaimer
     from pipeline import host
     reclaimer=Reclaimer(DATA/'memory-policy.json',host())
+    from memory_recovery import MemoryRecovery
+    recovery=MemoryRecovery(DATA/'memory-recovery.json',host(),DATA/'model-backend.log')
     psutil.cpu_percent(interval=None)
     note='';pending_command=previous.get('operation')
     while True:
@@ -409,6 +413,11 @@ def main(envfile):
             with urllib.request.urlopen(req,timeout=15) as response:reply=json.load(response)
             command=pending_command or reply.get('command');pending_command=None
             automatic=not command and sample['online'] and timing and degradation.observe(timing,time.time())
+            recovery_reason=None
+            if not command and not automatic:
+                recovery_reason=recovery.observe(memory.available//1048576,sample['processing'],sample['online'],
+                    stopped=(DATA/'linux-model-control.json').exists() or last_command.get('success') and last_command.get('action')=='stop')
+                automatic=bool(recovery_reason)
             if automatic:command={'action':'restart','id':'auto-'+str(int(time.time()))}
             if command and command.get('action') in ('start','stop','restart'):
                 if command['id']==last_command.get('id'):
@@ -420,15 +429,22 @@ def main(envfile):
                     try:
                         remembered=execute_model_command(command,store,remembered)
                         degradation.restarted(time.time())
-                        note='Автоперезапуск после устойчивой деградации 15%' if automatic else 'Команда '+command['action']+' выполнена'
+                        note=recovery_reason or ('Автоперезапуск после устойчивой деградации 15%' if automatic else 'Команда '+command['action']+' выполнена')
                         success=True
                     except Exception as error:
                         note=type(error).__name__+': '+str(error)[:110]
                         remembered=json.loads(STATE.read_text(encoding='utf-8')).get('resume_jobs',remembered) if STATE.exists() else remembered
-                    last_command={'id':command['id'],'success':success,'message':note}
+                    last_command={'id':command['id'],'action':command['action'],'success':success,'message':note}
                     save_state(resume_jobs=remembered,last_command=last_command,operation=None)
                 # Acknowledge immediately; a failed command remains visible to admin.
-                payload={'sample':{**sample,'online':ready(),'note':note},'ack':command['id'],
+                current=backend();used,total,utilization=gpu();memory=psutil.virtual_memory()
+                payload={'sample':{**sample,'online':ready(),'note':note,
+                    'processing':slot_activity() if current else False,
+                    'uptime_seconds':round(max(0,time.time()-current.create_time())) if current else None,
+                    'model_label':model_label(current),'vram_used_mb':used,'vram_total_mb':total,
+                    'gpu_percent':utilization,'ram_used_mb':round(memory.used/1048576),
+                    'ram_total_mb':round(memory.total/1048576),'generation_tps':None,'prefill_tps':None,
+                    'timing_at':None},'ack':command['id'],
                     'success':success,'message':note}
                 req=urllib.request.Request(endpoint,data=json.dumps(payload).encode(),headers={
                     'Authorization':'Bearer '+token,'Content-Type':'application/json'})

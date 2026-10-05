@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% load static %}
 {% block title %}{% if attaching %}Добавить проверку СТО{% else %}Новая проверка{% endif %}{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{% static 'launch.css' %}?v=prompt-plus-bold-20260930">
+<link rel="stylesheet" href="{% static 'launch.css' %}?v=attachments-layout-20261003">
 <script defer src="{% static 'launch.js' %}?v=doc-warning-095"></script>
 <a class="back-link" href="{% url 'dashboard' %}">← Рабочее пространство</a>
 <div class="page-heading launch-heading"><div><span class="eyebrow">НОРМОКОНТРОЛЬ ДОКУМЕНТОВ</span><h1>{% if attaching %}Добавить проверку СТО{% else %}Новая проверка{% endif %}</h1><p>{% if batch %}{{ batch.name }}{% else %}Добавьте документы и выберите направления. Всё готово к запуску на этой странице.{% endif %}</p></div><span class="launch-badge">Один экран · один запуск</span></div>

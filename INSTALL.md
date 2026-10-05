@@ -1,4 +1,4 @@
-# Установка NormControl 1.0.0
+# Установка NormControl 1.1.0
 
 Выпуск содержит исходники портала, движка, Knowledge v2 и Docker-компонентов. Модели, Microsoft Word, нормативные документы, пользовательские данные и секреты устанавливаются отдельно. Контейнерные образы из примеров нужно собрать; публикация в реестре образов не предполагается.
 
@@ -16,7 +16,7 @@
 ## Получение версии
 
 ```sh
-git clone --branch 1.0.0 https://github.com/vadimnstepanov-dot/normcontrol.git
+git clone --branch 1.1.0 https://github.com/vadimnstepanov-dot/normcontrol.git
 cd normcontrol
 ```
 

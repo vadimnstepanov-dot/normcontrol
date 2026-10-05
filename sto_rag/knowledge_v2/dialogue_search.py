@@ -3,13 +3,21 @@ import json
 from .search import HybridSearch
 from .store import Conflict
 
-VERSION='dialogue-rag-v1'
+VERSION='dialogue-rag-v2'
+SUPPORTED_VERSIONS=('dialogue-rag-v1',VERSION)
 KINDS=('requirement','term_definition','fragment','structured_fragment','review_case','clarification')
 
 def reference(store,encoder,vector,authorize,payload):
     query=payload['query'];limit=payload.get('limit',6)
     if not isinstance(query,str) or not 1<=len(query.strip())<=1200 or type(limit) is not int or not 1<=limit<=8:
         raise ValueError('Dialogue search budget')
+    if payload.get('dialogue_version',VERSION)==VERSION:
+        from .context_search import ContextSearch
+        return ContextSearch(store,encoder,vector,authorize).reference(payload['release_id'],query,limit=limit,profiles=payload.get('profiles'),expected_set_id=payload['set_id'])
+    return legacy_reference(store,encoder,vector,authorize,payload)
+
+def legacy_reference(store,encoder,vector,authorize,payload):
+    query=payload['query'];limit=payload.get('limit',6)
     found=HybridSearch(store,encoder,vector,authorize).reference(payload['release_id'],query,kinds=KINDS,limit=limit)
     # Search already verifies each canonical quote and its dependencies. Add
     # frozen trust and exact source identity, never the latest editor projection.

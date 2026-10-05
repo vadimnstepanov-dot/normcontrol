@@ -20,3 +20,10 @@ body:has(#launch-form) .theme-toggle{bottom:8px}
 .prompt-input{position:relative}.prompt-input textarea{padding-left:54px;width:100%}.prompt-input #prompt-attach{position:absolute;left:10px;top:12px;width:34px;height:34px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--text);font-size:25px;line-height:1;cursor:pointer}.prompt-input #prompt-attach:hover{background:var(--surface)}
 
 .prompt-input #prompt-attach{font-size:32px;font-weight:800}
+
+/* Keep file names readable beside the full-width form controls. */
+.launch-section .file-item{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,11rem) auto;gap:8px 12px;align-items:center}
+.launch-section .file-item>span{grid-column:1/-1;overflow-wrap:anywhere;font-weight:620}
+.launch-section .file-item>select{width:100%;min-width:0;max-width:100%}
+.launch-section .file-item>button{white-space:nowrap}
+@media(max-width:540px){.launch-section .file-item{grid-template-columns:minmax(0,1fr) auto}.launch-section .file-item>small{grid-column:1/-1}}

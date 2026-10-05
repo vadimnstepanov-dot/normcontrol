@@ -6,7 +6,8 @@ VERSION='normative-wire-v5'
 GROUPED_VERSION='normative-wire-v6'
 TRACE_REFS_VERSION='normative-wire-v7'
 TRACE_COMPACT_VERSION='normative-wire-v8'
-VERSIONS={VERSION,GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION}
+COMPACT_NORMS_VERSION='normative-wire-v9'
+VERSIONS={VERSION,GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION,COMPACT_NORMS_VERSION}
 POLICY='''Представление transport использует справочники без сокращения текста.
 documents — строки с колонками document_columns; id строки является block_id для
 цитаты. structure_ref раскрывается в document_structures: там документ, заголовки,
@@ -110,7 +111,7 @@ def payload(original, *, version=VERSION):
             for key in ('document','locator','location'):evidence.pop(key,None)
     # Stable normative/document prefix lets check/verify share the same input.
     # Unlike canonical hashing, transport serialization preserves this order.
-    if version in (GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION) and 'gaps' in scope:
+    if version in (GROUPED_VERSION,TRACE_REFS_VERSION,TRACE_COMPACT_VERSION,COMPACT_NORMS_VERSION) and 'gaps' in scope:
         from .gap_wire import pack
         scope['gaps']=pack(scope['gaps'])
     trace_citations={};document_names={}
@@ -127,6 +128,9 @@ def payload(original, *, version=VERSION):
     if 'proposed' in value:result['proposed']=value['proposed']
     if trace_citations:result['trace_citations']=trace_citations
     if document_names:result['document_names']=document_names
+    if version==COMPACT_NORMS_VERSION:
+        from .normative_values import pack
+        result=pack(result)
     return result,Identities({alias:rid for rid,alias in aliases.items()},blocks={alias:rid for rid,alias in blocks.items()})
 
 def serialize(value):
